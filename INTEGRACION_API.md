@@ -1,4 +1,4 @@
-# Guía de Integración — API Pública y Conexión de Bots
+# Guía de Integración — API, n8n y Bots Externos
 
 Esta plataforma actúa como el **cerebro central de IA y datos** para cualquier bot externo.
 Puedes conectar n8n, bots en Laravel, Node.js, Python, o cualquier sistema que pueda hacer peticiones HTTP.
@@ -16,9 +16,9 @@ Puedes conectar n8n, bots en Laravel, Node.js, Python, o cualquier sistema que p
    - [5.2 Modos de integración](#52-modos-de-integración)
    - [5.3 Modo A — IA completa (POST /ai/procesar)](#53-modo-a--ia-completa-post-aiprocesar)
    - [5.4 Selección de proveedor y modelo](#54-selección-de-proveedor-y-modelo)
-   - [5.5 Modo C — IA + envío automático a WhatsApp](#55-modo-c--ia--envío-automático-a-whatsapp)
-   - [5.6 Modo B — Solo envío a WhatsApp (POST /ai/enviar)](#56-modo-b--solo-envío-a-whatsapp-post-aienviar)
-   - [5.7 Endpoint de información (GET /ai/info)](#57-endpoint-de-información-get-aiinfo)
+   - [5.4 Modo C — IA + envío automático a WhatsApp](#54-modo-c--ia--envío-automático-a-whatsapp)
+   - [5.5 Modo B — Solo envío a WhatsApp (POST /ai/enviar)](#55-modo-b--solo-envío-a-whatsapp-post-aienviar)
+   - [5.6 Endpoint de información (GET /ai/info)](#56-endpoint-de-información-get-aiinfo)
    - [5.8 Ejemplo completo — Bot en Laravel](#58-ejemplo-completo--bot-en-laravel)
    - [5.9 Ejemplo completo — Bot en Node.js](#59-ejemplo-completo--bot-en-nodejs)
    - [5.10 Ejemplo completo — Bot en Python](#510-ejemplo-completo--bot-en-python)
@@ -36,21 +36,41 @@ Puedes conectar n8n, bots en Laravel, Node.js, Python, o cualquier sistema que p
 
 ## 1. Autenticación
 
-Todos los endpoints protegidos requieren el **API Token** que configuras en:
-> Configuración → API Pública → API Token
+Esta plataforma usa **dos tipos de API Key** según el tipo de integración:
 
-Envíalo en **una** de estas dos formas:
+### 1.1 API Token Global — para n8n
+
+Configúralo en:
+> Configuración → n8n / API Global → API Token
+
+Úsalo para autenticar las llamadas de n8n a esta plataforma:
 
 ```http
 # Opción A — Cabecera HTTP (recomendada)
-X-API-Key: tu-token-secreto
+X-API-Key: tu-api-token-global
 
 # Opción B — Query parameter
-GET /api/v1/mi-negocio/modulos?api_key=tu-token-secreto
+GET /api/v1/mi-negocio/catalogo/clientes?api_key=tu-api-token-global
 ```
 
+### 1.2 API Key por Bot — para bots externos
+
+Cada bot externo registrado recibe su **propia API Key** generada automáticamente por el sistema.
+
+> Configuración → Bots Externos → (registrar bot y guardar) → copiar la API Key del bot
+
+```http
+# Úsala igual que el token global
+X-API-Key: ext_a1b2c3d4e5f6...   # key única de ese bot
+```
+
+Ventajas:
+- Cada bot tiene credenciales independientes  
+- Puedes revocar o regenerar la key de un bot sin afectar a los demás  
+- Si un bot es comprometido, solo debes regenerar su key
+
 > Los endpoints marcados con 🔓 son **públicos** y no requieren token.
-> Los marcados con 🔒 requieren el token.
+> Los marcados con 🔒 aceptan cualquiera de los dos tipos de key.
 
 ---
 
@@ -110,7 +130,7 @@ POST /webhook/whatsapp/{instancia}  (esta plataforma)
 
 ### 4.1 Configuración
 
-En **Configuración → API Pública** establece:
+En **Configuración → n8n / API Global** establece:
 - **n8n Webhook URL** — la URL que n8n genera al crear un nodo Webhook
 - **n8n Timeout** — segundos que esta plataforma espera la respuesta (default: 8)
 
@@ -243,8 +263,16 @@ y usa esta plataforma como **cerebro de IA y/o canal de entrega de WhatsApp**.
 
 ### 5.1 Registrar tu bot
 
-Ve a **Configuración → Bots Externos** y registra tu bot con nombre y descripción.
-Esto es informativo. La autenticación siempre usa el API Token global.
+Ve a **Configuración → Bots Externos** y registra tu bot con:
+- **Nombre** — identificador legible
+- **Framework / Tecnología** — Laravel, Node.js, Python, etc.
+- **Webhook de notificación** (opcional) — URL donde esta plataforma notificará eventos a tu bot
+- **Timeout** — segundos de espera para la respuesta de tu bot (3–60)
+
+Después de guardar, el sistema **genera automáticamente una API Key única** para ese bot.  
+Cópiala desde el panel de Bots Externos — la necesitarás para autenticar las llamadas de tu bot.
+
+> Puedes **regenerar la key** en cualquier momento desde el panel. La key anterior deja de funcionar inmediatamente.
 
 ### 5.2 Modos de integración
 
@@ -263,7 +291,7 @@ Con el **Modo B** tu bot usa sus propias claves de IA, pero encamina el envío d
 
 ```http
 POST /api/v1/{tenant}/ai/procesar   🔒
-X-API-Key: tu-token
+X-API-Key: ext_a1b2c3...  # API Key propia del bot (generada al registrar el bot)
 Content-Type: application/json
 ```
 
@@ -289,17 +317,12 @@ Content-Type: application/json
 | `historial`     | array  | —   | Historial de mensajes. Máx. 50 pares `{ role, content }` |
 | `system_prompt` | string | —   | Prompt del sistema. Si se omite, usa el configurado en el panel |
 | `contexto`      | string | —   | Información adicional para la IA (datos del CRM, pedidos, etc.) |
-| `proveedor`     | string | —   | Sobreescribe el proveedor: `openai` \| `deepseek` \| `gemini` |
-| `modelo`        | string | —   | Sobreescribe el modelo (ej: `gpt-4o`, `deepseek-reasoner`) |
-
 #### Respuesta exitosa
 
 ```json
 {
   "success":   true,
   "respuesta": "Nuestros horarios son de lunes a viernes de 9am a 6pm.",
-  "proveedor": "openai",
-  "modelo":    "gpt-4o-mini",
   "enviado":   false
 }
 ```
@@ -308,59 +331,14 @@ Content-Type: application/json
 
 ```json
 {
-  "success":   false,
-  "error":     "La IA no pudo generar una respuesta. Verifica que el proveedor esté configurado y tenga crédito.",
-  "proveedor": "openai",
-  "modelo":    "gpt-4o-mini"
+  "success": false,
+  "error":   "El webhook no pudo generar una respuesta. Verifica que esté configurado y disponible."
 }
 ```
 
 ---
 
-### 5.4 Selección de proveedor y modelo
-
-Por defecto `/ai/procesar` usa el proveedor configurado en **Configuración → IA**.
-Puedes sobreescribirlo por llamada con los campos opcionales `proveedor` y `modelo`:
-
-```json
-{
-  "mensaje":   "Explícame la relatividad general en 2 líneas.",
-  "proveedor": "deepseek",
-  "modelo":    "deepseek-reasoner"
-}
-```
-
-```json
-{
-  "mensaje":   "Redacta un email de bienvenida formal.",
-  "proveedor": "openai",
-  "modelo":    "gpt-4o"
-}
-```
-
-Para saber qué proveedores están configurados en el sistema:
-
-```http
-GET /api/v1/{tenant}/ai/info   🔓
-```
-
-```json
-{
-  "ia_proveedor_activo": "openai",
-  "ia_modelo_activo":    "gpt-4o-mini",
-  "ia_proveedores": {
-    "openai":   { "disponible": true, "modelo": "gpt-4o-mini" },
-    "deepseek": { "disponible": true, "modelo": "deepseek-chat" }
-  }
-}
-```
-
-Solo puedes usar un proveedor si aparece en `ia_proveedores` con `"disponible": true`.
-Si indicas un proveedor sin API Key configurada, el sistema devuelve `503`.
-
----
-
-### 5.5 Modo C — IA + envío automático a WhatsApp
+### 5.4 Modo C — IA + envío automático a WhatsApp
 
 Agrega `enviar_whatsapp`, `instancia` y `remote_jid` al body de `/ai/procesar`
 para que el sistema genere la respuesta **y** la envíe a WhatsApp en una sola llamada:
@@ -395,7 +373,7 @@ La respuesta incluye `"enviado": true` si el envío fue exitoso:
 
 ---
 
-### 5.6 Modo B — Solo envío a WhatsApp (`POST /ai/enviar`)
+### 5.5 Modo B — Solo envío a WhatsApp (`POST /ai/enviar`)
 
 Cuando tu bot genera la respuesta con sus propias claves de IA,
 usa este endpoint para que el sistema la envíe por WhatsApp con sus credenciales de Evolution.
@@ -470,7 +448,7 @@ pero el array `resultados` muestra qué partes se enviaron y cuáles no.
 
 ---
 
-### 5.7 Endpoint de información (`GET /ai/info`)
+### 5.6 Endpoint de información (`GET /ai/info`)
 
 ```http
 GET /api/v1/{tenant}/ai/info   🔓
@@ -478,16 +456,11 @@ GET /api/v1/{tenant}/ai/info   🔓
 
 ```json
 {
-  "success":               true,
-  "tenant":                "mi-negocio",
-  "ia_proveedor_activo":   "openai",
-  "ia_modelo_activo":      "gpt-4o-mini",
-  "ia_proveedores": {
-    "openai":   { "disponible": true, "modelo": "gpt-4o-mini" },
-    "deepseek": { "disponible": true, "modelo": "deepseek-chat" }
-  },
-  "whatsapp_disponible":   true,
-  "bots_registrados":      2,
+  "success":             true,
+  "tenant":              "mi-negocio",
+  "webhook_configurado": true,
+  "whatsapp_disponible": true,
+  "bots_registrados":    2,
   "endpoints": {
     "procesar": "https://tudominio.com/api/v1/mi-negocio/ai/procesar",
     "enviar":   "https://tudominio.com/api/v1/mi-negocio/ai/enviar"
@@ -495,9 +468,9 @@ GET /api/v1/{tenant}/ai/info   🔓
 }
 ```
 
-Útil para verificar la conexión y saber qué proveedores están disponibles antes de empezar.
+Útil para verificar conectividad y confirmar que el sistema está operativo.
 
-### 5.8 Ejemplo completo — Bot en Laravel
+### 5.7 Ejemplo completo — Bot en Laravel
 
 ```php
 <?php
@@ -1081,7 +1054,7 @@ n8n — Nodo LLM / OpenAI (clasifica el mensaje)
 | `401`       | Token inválido o ausente               | Verifica `X-API-Key` o `?api_key=` en la petición           |
 | `404`       | Tenant slug incorrecto                 | Consulta `GET /api/v1/{slug}/info` para verificar el slug    |
 | `422`       | Validación fallida                     | Revisa el body JSON — revisa los campos requeridos           |
-| `503`       | API Token no configurado en la BD      | Ve a Configuración → API Pública y define el token           |
+| `503`       | API Token no configurado en la BD      | Ve a Configuración → n8n / API Global y define el token      |
 | `503`       | La IA no pudo generar respuesta        | Verifica que el proveedor de IA (OpenAI, etc.) esté configurado |
 | `504`       | Timeout al esperar n8n                 | Aumenta el timeout en Configuración o revisa tu workflow     |
 
@@ -1099,9 +1072,10 @@ Asegúrate de que tu nodo Respond to Webhook en n8n esté configurado en **"Usin
 
 | Qué configurar                | Dónde                                    | Afecta a |
 |-------------------------------|------------------------------------------|----------|
-| API Token                     | Configuración → API Pública → API Token  | Autenticación de todos los endpoints protegidos |
-| n8n Webhook URL               | Configuración → API Pública → n8n URL    | Reenvío de mensajes entrantes a n8n |
-| n8n Timeout                   | Configuración → API Pública → Timeout    | Segundos de espera antes de fallback |
+| API Token (n8n / global)      | Configuración → n8n / API Global → API Token   | Autenticación para n8n y llamadas globales      |
+| API Key por bot               | Configuración → Bots Externos → API Key del bot | Autenticación exclusiva de cada bot externo     |
+| n8n Webhook URL               | Configuración → n8n / API Global → n8n URL     | Reenvío de mensajes entrantes a n8n             |
+| n8n Timeout                   | Configuración → n8n / API Global → Timeout     | Segundos de espera antes de fallback            |
 | Proveedor de IA               | Configuración → Conectar APIs            | Proveedor por defecto en `/ai/procesar` |
 | API Key de OpenAI/DeepSeek/Gemini | Configuración → Conectar APIs        | Habilita ese proveedor en `/ai/info` y `/ai/procesar` |
 | Evolution URL y API Key       | Configuración → Evolution API            | Habilita `/ai/enviar` y Modo C de `/ai/procesar` |
