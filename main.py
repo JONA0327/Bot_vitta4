@@ -25,11 +25,16 @@ def get_settings() -> dict[str, Any]:
         "base_url": get_env("CEREBRO_URL", "VITTA_BASE_URL"),
         "api_key": get_env("CEREBRO_TOKEN", "BOT_API_KEY", "VITTA_API_KEY"),
         "tenant": get_env("CEREBRO_TENANT", "VITTA_TENANT"),
-        "timeout": float(get_env("CEREBRO_TIMEOUT", "VITTA_TIMEOUT") or "30"),
+        # CEREBRO_TIMEOUT debe ser MENOR que el timeout del bot configurado en CRM
+        # (Configuración → Bots Externos → timeout).  Default seguro: 25 s.
+        "timeout": float(get_env("CEREBRO_TIMEOUT", "VITTA_TIMEOUT") or "25"),
         "fallback": get_env(
             "BOT_FALLBACK_RESPONSE",
             "VITTA_FALLBACK_RESPONSE",
         ) or "En este momento no pude procesar tu mensaje. Intenta de nuevo en unos minutos.",
+        # Token que el CRM envía en el body (Configuración → API Pública → api_token).
+        # Si se define, el bot rechaza requests que no lo incluyan.
+        "incoming_token": get_env("CRM_INCOMING_TOKEN"),
     }
 
 
@@ -103,12 +108,20 @@ async def vitta4(request: Request):
     except Exception as exc:
         raise HTTPException(status_code=400, detail="El body debe ser JSON válido.") from exc
 
+    # Validar token entrante del CRM (solo si CRM_INCOMING_TOKEN está definido)
+    settings = get_settings()
+    incoming_token = settings.get("incoming_token")
+    if incoming_token:
+        request_token = body.get("api_token") or request.headers.get("X-API-Token")
+        if request_token != incoming_token:
+            raise HTTPException(status_code=401, detail="Token de acceso inválido.")
+
     mensaje = body.get("mensaje")
     if not mensaje:
         raise HTTPException(status_code=400, detail="El campo 'mensaje' es obligatorio.")
 
     telefono = body.get("telefono", "")
-    tenant = body.get("tenant") or get_settings()["tenant"]
+    tenant = body.get("tenant") or settings["tenant"]
 
     print("=== Mensaje recibido ===")
     print(f"Teléfono : {telefono}")
@@ -117,12 +130,11 @@ async def vitta4(request: Request):
     print("=======================")
 
     try:
-        data = await procesar_con_cerebro(body)
+        data = await procesar_con_cerebro({**body, "tenant": tenant})
     except HTTPException:
         raise
     except httpx.HTTPStatusError as exc:
         error_body = exc.response.text.strip()
-        settings = get_settings()
         return JSONResponse(
             status_code=200,
             content={
@@ -132,7 +144,6 @@ async def vitta4(request: Request):
             },
         )
     except httpx.RequestError as exc:
-        settings = get_settings()
         return JSONResponse(
             status_code=200,
             content={
@@ -144,7 +155,6 @@ async def vitta4(request: Request):
 
     respuesta = data.get("respuesta")
     if not respuesta:
-        settings = get_settings()
         return JSONResponse(
             status_code=200,
             content={
@@ -154,9 +164,10 @@ async def vitta4(request: Request):
             },
         )
 
-    return {
-        "success": True,
-        "respuesta": respuesta,
-        "proveedor": data.get("proveedor"),
-        "modelo": data.get("modelo"),
-    }
+    result: dict[str, Any] = {"success": True, "respuesta": respuesta}
+    # Solo incluir proveedor/modelo si el CRM los devuelve
+    if data.get("proveedor"):
+        result["proveedor"] = data["proveedor"]
+    if data.get("modelo"):
+        result["modelo"] = data["modelo"]
+    return result
