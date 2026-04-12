@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from dotenv import load_dotenv
+from Filtro_Mensajes import filtro_mensaje
 
 load_dotenv()
 
@@ -41,4 +42,20 @@ async def vitta4(request: Request) -> dict[str, Any]:
     telefono = body.get("telefono", "desconocido")
     print(f"[vitta4] tel={telefono} msg={mensaje}")
 
+    # ── Filtro de contenido ──────────────────────────────────────────────────
+    bloqueo = await filtro_mensaje(mensaje)
+    if bloqueo == "inapropiado":
+        print(f"[vitta4] BLOQUEADO (inapropiado) — tel={telefono}")
+        return {
+            "tipo_bloqueo": "inapropiado",
+            "motivo": "Mensaje con contenido inapropiado detectado por filtro.",
+        }
+    if bloqueo == "irrelevante":
+        print(f"[vitta4] PAUSADO (irrelevante) — tel={telefono}")
+        return {
+            "tipo_bloqueo": "irrelevante",
+            "motivo": "Mensaje fuera del contexto del negocio.",
+        }
+
+    # ── Respuesta normal ─────────────────────────────────────────────────────
     return {"success": True, "respuesta": RESPUESTA_PRUEBA}
