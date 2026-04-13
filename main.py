@@ -40,6 +40,7 @@ async def vitta4(request: Request) -> dict[str, Any]:
     mensaje        = body.get("mensaje", "")
     tipo_contenido = body.get("tipo_contenido", "texto")
     telefono       = body.get("telefono", "desconocido")
+    instancia      = body.get("instancia", "")
 
     # Campos de media y publicación de Facebook
     url_media      = body.get("url_media", "")
@@ -125,6 +126,7 @@ async def vitta4(request: Request) -> dict[str, Any]:
             historial_texto=historial_texto,
             analisis=procesado.get("analisis") or {},
             intencion=intencion,
+            instancia=instancia,
         )
         if respuesta:
             return {

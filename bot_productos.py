@@ -21,6 +21,8 @@ import os
 import re
 import json
 import httpx
+from datetime import datetime
+import zoneinfo
 
 from Filtro_Mensajes import OPENAI_API_KEY, OPENAI_TIMEOUT
 
@@ -77,6 +79,7 @@ if _catalogo_extra:
         pass
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # System prompt del bot de productos
 # ─────────────────────────────────────────────────────────────────────────────
 _PRODUCTOS_SYSTEM = f"""Eres un asesor de ventas experto de 4Life, una empresa de suplementos y productos de salud. \
@@ -96,6 +99,86 @@ CATÁLOGO DISPONIBLE:
 {_CATALOGO_BASE}
 """
 
+# Prompt exclusivo para el primer contacto (PASO 1)
+_PASO1_SYSTEM = """Eres una asesora de ventas real de 4Life que atiende por WhatsApp. \
+Eres cálida, cercana y natural — la gente NO debe notar que eres un bot.
+
+Tu tarea es escribir el PRIMER mensaje de bienvenida a un cliente nuevo.
+
+REGLAS ESTRICTAS:
+- Adapta el saludo (buenos días / buenas tardes / buenas noches) según la hora EXACTA que se te indique.
+- Preséntate usando el nombre de instancia que se te proporcione.
+- Incluye EXACTAMENTE este bloque (sin cambiar nada):
+  "Gracias por escribirnos 🙌 Justo tenemos promociones activas que están ayudando muchísimo a nuestros clientes 💙✨
+
+Estoy aquí para ayudarte con cualquier duda o recomendarte lo mejor según lo que buscas.
+
+Cuéntame, ¿te interesa mejorar tu energía, tu sistema inmune o generar ingresos? 👇
+Así puedo orientarte mejor."
+- Después del bloque, pide su nombre de forma MUY natural, como lo haría una persona real. \
+  Por ejemplo: "¿Con quién tengo el gusto?" o "¿Cómo te llamo?" — varía, no uses siempre la misma frase.
+- NO uses frases robóticas como "¿En qué puedo ayudarte?" ni "¿Cuál es tu nombre?".
+- Usa emojis de forma natural, sin exagerar.
+- Máximo 4–5 líneas de texto en total (sin contar el bloque fijo).
+- NO menciones que eres IA, chatbot, sistema automatizado ni nada similar.
+"""
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper: saludo PASO 1 — primer contacto
+# ─────────────────────────────────────────────────────────────────────────────
+def _saludo_hora_mexico() -> str:
+    """Devuelve 'buenos días', 'buenas tardes' o 'buenas noches' según hora México."""
+    try:
+        tz = zoneinfo.ZoneInfo("America/Mexico_City")
+    except Exception:
+        tz = None
+    hora = datetime.now(tz).hour if tz else datetime.now().hour
+    if 5 <= hora < 12:
+        return "buenos días"
+    elif 12 <= hora < 19:
+        return "buenas tardes"
+    else:
+        return "buenas noches"
+
+
+async def _responder_paso1(instancia: str) -> str | None:
+    """Genera el mensaje de bienvenida (PASO 1) usando IA."""
+    saludo = _saludo_hora_mexico()
+    nombre_bot = instancia.strip() or "4Life"
+
+    prompt_usuario = (
+        f"Hora del día: {saludo}.\n"
+        f"Tu nombre (instancia): {nombre_bot}.\n"
+        "Escribe el mensaje de bienvenida siguiendo todas las instrucciones del sistema."
+    )
+
+    messages = [
+        {"role": "system", "content": _PASO1_SYSTEM},
+        {"role": "user", "content": prompt_usuario},
+    ]
+
+    try:
+        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0.85,
+                    "max_tokens": 350,
+                    "messages": messages,
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Función principal
@@ -105,6 +188,7 @@ async def responder_productos(
     historial_texto: str = "",
     analisis: dict | None = None,
     intencion: dict | None = None,
+    instancia: str = "",
 ) -> str | None:
     """
     Genera una respuesta personalizada sobre productos 4Life.
@@ -116,7 +200,11 @@ async def responder_productos(
     analisis = analisis or {}
     intencion = intencion or {}
 
-    # ── Construir contexto adicional ──────────────────────────────────────────
+    # ── PASO 1: Primer contacto (sin historial) ───────────────────────────────
+    if not historial_texto.strip():
+        return await _responder_paso1(instancia)
+
+    # ── PASO 2+: Conversación en curso ────────────────────────────────────────
     contexto_partes: list[str] = []
 
     # Productos detectados en imagen/publicación
