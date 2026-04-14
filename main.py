@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from BotLogger import CRM_API_TOKEN, CRM_TENANT, CRM_URL, bot_log
 from bot_productos import responder_productos
 from Filtro_Mensajes import (
+    _descargar_imagen_base64,
     analizar_intencion,
     filtrar_y_clasificar,
     procesar_contenido,
@@ -45,12 +46,15 @@ async def _procesar_y_enviar(data: dict) -> None:
     caption        = data.get("caption", "")
     titulo_fb      = data.get("titulo_fb", "")
     descripcion_fb = data.get("descripcion_fb", "")
-    thumbnail_url  = data.get("thumbnail_url", "")
+    # Usar imagen ya descargada como base64 si está disponible (evita expiración de URL)
+    thumbnail_url  = data.get("thumbnail_url_b64") or data.get("thumbnail_url", "")
     remote_jid     = data.get("remote_jid", "")
     alt_phones     = data.get("alt_phones", [])
 
-    # ── Historial ─────────────────────────────────────────────────────────────
-    historial = await obtener_historial(telefono, alternativas=alt_phones)
+    # ── Historial (usar cache si ya se obtuvo al recibir el mensaje) ──────────
+    historial = data.get("_historial_cache")
+    if historial is None:
+        historial = await obtener_historial(telefono, alternativas=alt_phones)
     historial_texto = formatear_historial_para_ia(historial)
     if historial_texto:
         await bot_log(instancia, "info", "Historial", f"tel={telefono} turnos={len(historial)}")
@@ -157,9 +161,24 @@ async def _procesar_y_enviar(data: dict) -> None:
 
 
 async def _ejecutar_debounce(clave: str) -> None:
-    """Tarea asyncio: espera DEBOUNCE_SECS y procesa el último mensaje acumulado."""
+    """Tarea asyncio: decide tiempo de espera según historial y procesa el último mensaje."""
+    data = _pending_data.get(clave)
+    instancia = (data or {}).get("instancia", "")
+    telefono  = (data or {}).get("telefono", "")
+    alt_phones = (data or {}).get("alt_phones", [])
+
+    # Verificar si hay historial para decidir el tiempo de espera
+    historial_cache = await obtener_historial(telefono, alternativas=alt_phones)
+    es_primer_mensaje = not historial_cache
+    sleep_secs = 0 if es_primer_mensaje else DEBOUNCE_SECS
+
+    if es_primer_mensaje:
+        await bot_log(instancia, "info", "Debounce", f"primer mensaje → respuesta inmediata tel={telefono}")
+    else:
+        await bot_log(instancia, "info", "Debounce", f"historial detectado → esperando {sleep_secs}s tel={telefono}")
+
     try:
-        await asyncio.sleep(DEBOUNCE_SECS)
+        await asyncio.sleep(sleep_secs)
     except asyncio.CancelledError:
         return  # cancelado por un mensaje más reciente
 
@@ -167,8 +186,8 @@ async def _ejecutar_debounce(clave: str) -> None:
     _pending_tasks.pop(clave, None)
     if not data:
         return
-    await bot_log(data.get("instancia", ""), "info", "Debounce",
-        f"procesando tras {DEBOUNCE_SECS}s tel={data.get('telefono', '')}")
+    # Cachear el historial ya obtenido para no repetir la llamada al CRM
+    data["_historial_cache"] = historial_cache
     await _procesar_y_enviar(data)
 
 
@@ -229,18 +248,28 @@ async def vitta4(request: Request) -> dict[str, Any]:
         existing.cancel()
         await bot_log(instancia, "info", "Debounce", f"timer reiniciado tel={telefono}")
 
+    # Descargar imagen de FB a base64 inmediatamente (la URL de CDN expira pronto)
+    thumbnail_url_b64 = None
+    if thumbnail_url and (tipo_contenido == "publicacion_facebook" or titulo_fb or descripcion_fb):
+        thumbnail_url_b64 = await _descargar_imagen_base64(thumbnail_url)
+        if thumbnail_url_b64:
+            await bot_log(instancia, "info", "Debounce", f"imagen FB descargada OK ({len(thumbnail_url_b64)} chars)")
+        else:
+            await bot_log(instancia, "warning", "Debounce", "imagen FB no descargable, se usará URL")
+
     _pending_data[clave] = {
-        "mensaje":        mensaje,
-        "tipo_contenido": tipo_contenido,
-        "telefono":       telefono,
-        "instancia":      instancia,
-        "url_media":      url_media,
-        "caption":        caption,
-        "titulo_fb":      titulo_fb,
-        "descripcion_fb": descripcion_fb,
-        "thumbnail_url":  thumbnail_url,
-        "remote_jid":     _remote_jid,
-        "alt_phones":     _alt_phones,
+        "mensaje":           mensaje,
+        "tipo_contenido":    tipo_contenido,
+        "telefono":          telefono,
+        "instancia":         instancia,
+        "url_media":         url_media,
+        "caption":           caption,
+        "titulo_fb":         titulo_fb,
+        "descripcion_fb":    descripcion_fb,
+        "thumbnail_url":     thumbnail_url,
+        "thumbnail_url_b64": thumbnail_url_b64,  # base64 pre-descargado
+        "remote_jid":        _remote_jid,
+        "alt_phones":        _alt_phones,
     }
     _pending_tasks[clave] = asyncio.create_task(_ejecutar_debounce(clave))
 
