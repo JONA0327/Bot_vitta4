@@ -123,6 +123,34 @@ Así puedo orientarte mejor."
 - NO menciones que eres IA, chatbot, sistema automatizado ni nada similar.
 """
 
+# Prompt para PASO 2 — manejo del nombre + indagación de necesidad
+_PASO2_SYSTEM = """Eres una asesora de ventas real de 4Life que atiende por WhatsApp. \
+Eres cálida, cercana y natural — la gente NO debe notar que eres un bot.
+
+CONTEXTO: Es el SEGUNDO intercambio. En el mensaje anterior le pediste el nombre al cliente.
+
+TU TAREA:
+1. Lee el mensaje del cliente con atención:
+   - Si dio su nombre: reconócelo de forma natural y cálida \
+(ej. "¡Qué gusto [nombre]!" o "Gracias [nombre] 😊"). Usa su nombre de ahora en adelante.
+   - Si pregunta para qué quieres su nombre: explica brevemente que es para darle una atención \
+más personalizada, pero que no hay problema si prefiere no compartirlo. Continúa igual.
+   - Si no dio nombre ni preguntó nada especial: pasa directamente al siguiente punto sin mencionarlo.
+
+2. Después (con nombre o sin él), haz la PREGUNTA DE INDAGACIÓN que se te indica a continuación.
+
+PREGUNTA DE INDAGACIÓN A USAR:
+{pregunta_indagacion}
+
+REGLAS ADICIONALES:
+- Habla de tú, sé muy natural y humano/a.
+- Máximo 3–4 líneas en total.
+- Emojis con moderación.
+- NO saludes de nuevo (ya saludaste).
+- NO menciones que eres IA, bot o sistema automatizado.
+- NO repitas información del mensaje anterior.
+"""
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -180,6 +208,91 @@ async def _responder_paso1(instancia: str) -> str | None:
         return None
 
 
+def _construir_pregunta_indagacion(analisis: dict, intencion: dict) -> str:
+    """
+    Construye la pregunta de indagación de necesidad según el contexto.
+    Si hay productos detectados de FB/imagen: pregunta qué quieren mejorar con esos productos.
+    Si no hay productos específicos: pregunta abierta sobre qué buscan.
+    """
+    # Recolectar productos detectados de todas las fuentes
+    productos: list[str] = list(intencion.get("productos_mencionados") or [])
+    if isinstance(analisis.get("items"), list):
+        for item in analisis["items"]:
+            if item and item not in productos:
+                productos.append(item)
+    producto_principal = analisis.get("producto_mencionado") or ""
+    if producto_principal and producto_principal not in productos:
+        productos.insert(0, producto_principal)
+
+    tiene_productos_fb = bool(
+        productos
+        or analisis.get("resumen_para_bot")
+        or analisis.get("descripcion_publicacion")
+    )
+
+    if tiene_productos_fb:
+        lista = ", ".join(productos[:3]) if productos else "este producto"
+        return (
+            f"El cliente llegó interesado en: {lista}. "
+            "Pregunta de forma natural qué quiere MEJORAR o FORTALECER en relación a esos productos "
+            "(ej. digestión, energía, inmunidad, peso, etc.). "
+            "NO ofrezcas la opción de 'generar ingresos' — el cliente está enfocado en productos. "
+            "Personaliza la pregunta mencionando el/los producto(s) de forma natural."
+        )
+    else:
+        return (
+            "No hay productos específicos detectados. "
+            "Pregunta de forma abierta y natural qué producto busca o qué necesidad quiere resolver "
+            "(energía, inmunidad, digestión, peso, bienestar general, etc.). "
+            "Puedes incluir 'generar ingresos' como opción si aplica."
+        )
+
+
+async def _responder_paso2(
+    texto_usuario: str,
+    historial_texto: str,
+    analisis: dict,
+    intencion: dict,
+) -> str | None:
+    """PASO 2 — Manejo del nombre + indagación de necesidad."""
+    pregunta = _construir_pregunta_indagacion(analisis, intencion)
+    system = _PASO2_SYSTEM.format(pregunta_indagacion=pregunta)
+
+    messages = [
+        {"role": "system", "content": system},
+        {
+            "role": "system",
+            "content": f"HISTORIAL:\n{historial_texto}",
+        },
+        {"role": "user", "content": texto_usuario},
+    ]
+
+    try:
+        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0.8,
+                    "max_tokens": 350,
+                    "messages": messages,
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return None
+
+
+def _contar_turnos_bot(historial_texto: str) -> int:
+    """Cuenta cuántas respuestas del bot hay en el historial."""
+    return historial_texto.count("\nBot:") + (1 if historial_texto.startswith("Bot:") else 0)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Función principal
 # ─────────────────────────────────────────────────────────────────────────────
@@ -204,7 +317,11 @@ async def responder_productos(
     if not historial_texto.strip():
         return await _responder_paso1(instancia)
 
-    # ── PASO 2+: Conversación en curso ────────────────────────────────────────
+    # ── PASO 2: Segunda respuesta — manejo del nombre + indagación ────────────
+    if _contar_turnos_bot(historial_texto) == 1:
+        return await _responder_paso2(texto_usuario, historial_texto, analisis, intencion)
+
+    # ── PASO 3+: Conversación en curso ────────────────────────────────────────
     contexto_partes: list[str] = []
 
     # Productos detectados en imagen/publicación
