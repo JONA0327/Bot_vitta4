@@ -145,12 +145,18 @@ async def vitta4(request: Request) -> dict[str, Any]:
     intencion = procesado.get("intencion") or {}
     tipo_intencion = (intencion.get("intencion") or "").lower()
 
-    # Si hay conversación activa (historial), siempre continúa el flujo de productos
-    # sin importar la intención del mensaje actual (puede ser una objeción, pregunta, etc.)
-    flujo_productos = tipo_intencion in ("productos", "mixto") or bool(historial_texto.strip())
+    # Siempre entrar al flujo de productos:
+    # - Si hay historial activo (conversación en curso) → continuar sin importar intención
+    # - Si viene de publicación de Facebook → es un lead de productos
+    # - Si la intención detectada es productos o mixto
+    # - Si la intención es desconocida pero hay conversación → la IA en bot_productos resolverá en contexto
+    # Solo se omite si intención explícita es NEGOCIO y no hay historial previo
+    es_flujo_negocio_puro = tipo_intencion == "negocio" and not historial_texto.strip()
+    flujo_productos = not es_flujo_negocio_puro
+
+    print(f"[vitta4] tipo_intencion={tipo_intencion!r} historial={'sí' if historial_texto else 'no'} flujo={'productos' if flujo_productos else 'negocio/genérico'}")
 
     if flujo_productos:
-        print(f"[vitta4] flujo=productos tipo_intencion={tipo_intencion!r} historial={'sí' if historial_texto else 'no'} — tel={telefono}")
         respuesta = await responder_productos(
             texto_usuario=texto_para_bot,
             historial_texto=historial_texto,
