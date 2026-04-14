@@ -220,6 +220,8 @@ CRM_URL = os.getenv("CRM_URL", "").rstrip("/")
 CRM_TENANT = os.getenv("CRM_TENANT", "")
 CRM_API_TOKEN = os.getenv("CRM_API_TOKEN", "")
 CRM_TIMEOUT = float(os.getenv("CRM_TIMEOUT", "8"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "10"))
 
 
 async def _crm_get(module: str, params: dict | None = None) -> list | dict | None:
