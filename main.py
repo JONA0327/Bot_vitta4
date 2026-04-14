@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from dotenv import load_dotenv
-from Filtro_Mensajes import filtro_mensaje, procesar_contenido, analizar_intencion, OPENAI_API_KEY
+from Filtro_Mensajes import filtrar_y_clasificar, filtro_mensaje, procesar_contenido, analizar_intencion, OPENAI_API_KEY
 from Historial_Conversacion import obtener_historial, formatear_historial_para_ia
 from bot_productos import responder_productos
 
@@ -100,20 +100,45 @@ async def vitta4(request: Request) -> dict[str, Any]:
 
     print(f"[vitta4] texto_procesado={texto_para_bot[:80]!r} intencion={procesado.get('intencion')}")
 
-    # ── Filtro de contenido ──────────────────────────────────────────────────
-    bloqueo = await filtro_mensaje(texto_para_bot)
-    if bloqueo == "inapropiado":
-        print(f"[vitta4] BLOQUEADO (inapropiado) — tel={telefono}")
-        return {
-            "tipo_bloqueo": "inapropiado",
-            "motivo": "Mensaje con contenido inapropiado detectado por filtro.",
-        }
-    if bloqueo == "irrelevante":
-        print(f"[vitta4] PAUSADO (irrelevante) — tel={telefono}")
+    # ── Filtro unificado: detecta pub_facebook + clasifica en un solo paso ───
+    clasificacion = await filtrar_y_clasificar(
+        mensaje=mensaje,
+        tipo_original=tipo_contenido,
+        url_publicidad=thumbnail_url,
+        telefono=telefono,
+        remote_jid=_remote_jid or telefono,
+    )
+    print(f"[vitta4] filtro={clasificacion}")
+
+    if clasificacion["filtro_active"]:
+        tipo_bloqueo = clasificacion["tipo_bloqueo"] or "inapropiado"
+        if tipo_bloqueo in ("inapropiado", "prompt_injection"):
+            print(f"[vitta4] BLOQUEADO ({tipo_bloqueo}) — tel={telefono}")
+            return {
+                "tipo_bloqueo": "inapropiado",
+                "motivo": f"Mensaje bloqueado: {tipo_bloqueo}.",
+            }
+        print(f"[vitta4] PAUSADO ({tipo_bloqueo}) — tel={telefono}")
         return {
             "tipo_bloqueo": "irrelevante",
             "motivo": "Mensaje fuera del contexto del negocio.",
         }
+
+    # Si el filtro detectó pub_facebook, forzamos el tipo para que el flujo lo trate igual
+    if clasificacion["pub_facebook"] and tipo_contenido != "publicacion_facebook":
+        tipo_contenido = "publicacion_facebook"
+        # Re-procesar con el tipo correcto si aún no fue procesado como FB
+        if procesado.get("tipo_contenido") != "publicacion_facebook":
+            procesado = await procesar_contenido(
+                tipo_contenido="publicacion_facebook",
+                mensaje=mensaje,
+                url_media=url_media,
+                caption=caption,
+                titulo_fb=titulo_fb,
+                descripcion_fb=descripcion_fb,
+                thumbnail_url=thumbnail_url,
+            )
+            texto_para_bot = procesado["texto_procesado"]
 
     # ── Respuesta según intención detectada ──────────────────────────────────
     intencion = procesado.get("intencion") or {}
