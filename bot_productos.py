@@ -204,11 +204,11 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
             f"Hora del día: {saludo}.\n"
             f"Tu nombre (instancia): {nombre_bot}.\n"
             f"CONTEXTO: El usuario llegó desde una pauta con este tema: {tema_salud}\n"
-            "Escribe el mensaje de bienvenida empático (máximo 3-4 líneas). "
-            "Reconoce su interés en el tema de salud detectado de forma natural, sin mencionar nombres técnicos de líneas ni productos. "
+            "MÁXIMO 2 líneas cortas. "
+            "Reconoce su interés en el tema de salud de forma natural y empática, sin mencionar nombres técnicos de líneas ni productos. "
             "Ej: 'Vi que le interesó lo relacionado con la digestión/salud digestiva/bienestar...' "
             "NO menciones '4Life' como marca ni 'generar ingresos'. "
-            "Cierra pidiendo el nombre respetuosamente."
+            "Cierra pidiendo el nombre respetuosamente. Un solo emoji al final."
         )
     else:
         prompt_usuario = (
@@ -348,8 +348,8 @@ async def responder_productos(
     analisis = analisis or {}
     intencion = intencion or {}
 
-    # ── PASO 1: Primer contacto (sin historial) ───────────────────────────────
-    if not historial_texto.strip():
+    # ── PASO 1: Primer contacto (sin historial o sin respuesta previa del bot) ─
+    if not historial_texto.strip() or _contar_turnos_bot(historial_texto) == 0:
         return await _responder_paso1(instancia, analisis, intencion)
 
     # ── PASO 2: Segunda respuesta — manejo del nombre + indagación ────────────
