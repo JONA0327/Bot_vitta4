@@ -169,16 +169,54 @@ def _saludo_hora_mexico() -> str:
         return "buenas noches"
 
 
-async def _responder_paso1(instancia: str) -> str | None:
+def _extraer_productos_contexto(analisis: dict, intencion: dict) -> list[str]:
+    """Extrae lista de productos detectados de FB/imagen del análisis."""
+    productos: list[str] = list(intencion.get("productos_mencionados") or [])
+    if isinstance(analisis.get("items"), list):
+        for item in analisis["items"]:
+            if item and item not in productos:
+                productos.append(item)
+    producto_principal = analisis.get("producto_mencionado") or ""
+    if producto_principal and producto_principal not in productos:
+        productos.insert(0, producto_principal)
+    return productos
+
+
+async def _responder_paso1(instancia: str, analisis: dict | None = None, intencion: dict | None = None) -> str | None:
     """Genera el mensaje de bienvenida (PASO 1) usando IA."""
+    analisis = analisis or {}
+    intencion = intencion or {}
     saludo = _saludo_hora_mexico()
     nombre_bot = instancia.strip() or "4Life"
 
-    prompt_usuario = (
-        f"Hora del día: {saludo}.\n"
-        f"Tu nombre (instancia): {nombre_bot}.\n"
-        "Escribe el mensaje de bienvenida siguiendo todas las instrucciones del sistema."
+    # Detectar si viene de publicación FB con productos específicos
+    productos_fb = _extraer_productos_contexto(analisis, intencion)
+    tiene_fb = bool(
+        productos_fb
+        or analisis.get("resumen_para_bot")
+        or analisis.get("descripcion_publicacion")
     )
+
+    if tiene_fb:
+        lista_productos = ", ".join(productos_fb[:3]) if productos_fb else "estos productos"
+        resumen_fb = analisis.get("resumen_para_bot") or analisis.get("descripcion_publicacion") or ""
+        contexto_fb = f"Productos de la publicación: {lista_productos}."
+        if resumen_fb:
+            contexto_fb += f" Descripción: {resumen_fb}"
+        prompt_usuario = (
+            f"Hora del día: {saludo}.\n"
+            f"Tu nombre (instancia): {nombre_bot}.\n"
+            f"CONTEXTO: El cliente llegó desde una publicación de Facebook con: {contexto_fb}\n"
+            "Escribe el mensaje de bienvenida enfocado en ESOS PRODUCTOS específicos. "
+            "NO menciones 'generar ingresos' — el cliente está interesado en productos de salud. "
+            "Pregunta su nombre de forma natural al final."
+        )
+    else:
+        prompt_usuario = (
+            f"Hora del día: {saludo}.\n"
+            f"Tu nombre (instancia): {nombre_bot}.\n"
+            "Escribe el mensaje de bienvenida siguiendo todas las instrucciones del sistema."
+        )
 
     messages = [
         {"role": "system", "content": _PASO1_SYSTEM},
@@ -313,7 +351,7 @@ async def responder_productos(
 
     # ── PASO 1: Primer contacto (sin historial) ───────────────────────────────
     if not historial_texto.strip():
-        return await _responder_paso1(instancia)
+        return await _responder_paso1(instancia, analisis, intencion)
 
     # ── PASO 2: Segunda respuesta — manejo del nombre + indagación ────────────
     if _contar_turnos_bot(historial_texto) == 1:
