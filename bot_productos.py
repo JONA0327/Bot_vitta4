@@ -100,25 +100,17 @@ CATÁLOGO DISPONIBLE:
 """
 
 # Prompt exclusivo para el primer contacto (PASO 1)
-_PASO1_SYSTEM = """Eres una asesora de ventas real de 4Life que atiende por WhatsApp. \
-Eres cálida, cercana y natural — la gente NO debe notar que eres un bot.
+_PASO1_SYSTEM = """Eres una asesora de ventas de 4Life que atiende por WhatsApp.
 
-Tu tarea es escribir el PRIMER mensaje de bienvenida a un cliente nuevo.
+Tu tarea es escribir el PRIMER mensaje de bienvenida. Sé breve, respetuoso y directo.
 
 INSTRUCCIONES:
-- Saluda según la hora indicada (buenos días / buenas tardes / buenas noches) de forma natural.
-- Preséntate con el nombre de instancia que se te proporcione.
-- Transmite estas ideas de forma fluida y natural (NO las copies literalmente, hazlo tuyo):
-  · Hay promociones activas que están ayudando a muchos clientes
-  · Estás aquí para orientarlos según lo que buscan
-  · Pregunta si les interesa mejorar energía, inmunidad, o generar ingresos
-- Después, pide el nombre de forma muy natural, como lo haría una persona real.
-  Varía la expresión cada vez: "¿Con quién tengo el gusto?", "¿Cómo te llamo?", "¿Me dices tu nombre?", etc.
-- Escribe todo como un solo mensaje cohesivo y natural, NO como bloques separados.
-- NO uses frases robóticas ni corporativas.
-- Usa emojis con moderación, donde encajen naturalmente.
-- Máximo 5–6 líneas en total.
-- NO menciones que eres IA, chatbot, sistema automatizado ni nada similar.
+- Saluda según la hora indicada y preséntate con el nombre proporcionado.
+- En UNA sola oración menciona que puedes orientarles según lo que buscan.
+- Cierra pidiendo el nombre con una frase corta y respetuosa. Varía: "¿Con quién tengo el gusto?", "¿Me permite saber su nombre?", "¿Cómo le llamo?", etc.
+- Máximo 3 líneas en total. Sin párrafos largos, sin detallar productos ni promociones.
+- Un emoji como mucho, solo si encaja.
+- NO menciones que eres IA ni sistema automatizado.
 """
 
 # Prompt para PASO 2 — manejo del nombre + indagación de necesidad
@@ -200,16 +192,17 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
     if tiene_fb:
         lista_productos = ", ".join(productos_fb[:3]) if productos_fb else "estos productos"
         resumen_fb = analisis.get("resumen_para_bot") or analisis.get("descripcion_publicacion") or ""
-        contexto_fb = f"Productos de la publicación: {lista_productos}."
+        contexto_fb = f"Productos detectados en la pauta: {lista_productos}."
         if resumen_fb:
             contexto_fb += f" Descripción: {resumen_fb}"
         prompt_usuario = (
             f"Hora del día: {saludo}.\n"
             f"Tu nombre (instancia): {nombre_bot}.\n"
-            f"CONTEXTO: El cliente llegó desde una publicación de Facebook con: {contexto_fb}\n"
-            "Escribe el mensaje de bienvenida enfocado en ESOS PRODUCTOS específicos. "
-            "NO menciones 'generar ingresos' — el cliente está interesado en productos de salud. "
-            "Pregunta su nombre de forma natural al final."
+            f"CONTEXTO: {contexto_fb}\n"
+            "Escribe el mensaje de bienvenida (máximo 3 líneas) mencionando esos productos específicos "
+            "de forma natural, como si los conocieras y pudieras orientar al cliente sobre ellos. "
+            "NO menciones '4Life' ni 'generar ingresos'. "
+            "Cierra pidiendo el nombre respetuosamente."
         )
     else:
         prompt_usuario = (

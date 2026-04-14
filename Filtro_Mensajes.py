@@ -295,16 +295,35 @@ async def transcribir_audio(url_audio: str) -> str | None:
 
 
 # ─── Análisis de PUBLICACIÓN de FACEBOOK ─────────────────────────────────────
-_FACEBOOK_SYSTEM = (
-    "Eres un asistente que analiza publicaciones de Facebook compartidas por WhatsApp para una empresa distribuidora de 4Life.\n"
-    "Con base en el mensaje del usuario, el título, la descripción de la publicación y la imagen (si hay URL), genera un análisis.\n\n"
-    "Responde ÚNICAMENTE con JSON válido:\n"
-    '{"descripcion_publicacion":"de qué trata la publicación",'
-    '"producto_mencionado":"nombre del producto o null",'
-    '"contexto_usuario":"qué le interesa al usuario según su mensaje",'
-    '"resumen_para_bot":"texto conciso listo para que el bot lo use como contexto de la conversación"}\n'
-    "Sin texto adicional."
-)
+_FACEBOOK_SYSTEM = """\
+Eres un especialista en el catálogo completo de 4Life con conocimiento profundo de sus líneas y productos individuales.
+
+CONOCIMIENTO BASE — LÍNEAS Y PRODUCTOS INDIVIDUALES:
+- Línea Transfer Factor: Transfer Factor Plus Tri-Factor, Transfer Factor Tri-Factor (clásico), Transfer Factor RioVida, NanoFactor, Transfer Factor Belle Vie, Transfer Factor Cardio, Transfer Factor ReCall, Transfer Factor Immune Spray
+- Línea Digestive 4Life (línea digestiva): Digestive 4Life (enzimas digestivas), 4Life Probiotics, 4Life Fiber System Plus → son productos INDIVIDUALES dentro de la línea "Digestive 4Life"
+- Línea Transform (control de peso): 4Life Transform Burn, 4Life Transform Go, 4Life Transform Shake, ProTF
+- Línea BioEFA / Cardiovascular: BioEFA, 4Life Cardio Essentials
+- Línea Energía/Rendimiento: Energy 4Life, 4Life Transform Go
+- Línea Cuidado personal: Enummi (cuidado de piel)
+- Otros: 4Life Vision Essentials, 4Life OsoLean, Targeted Transfer Factor series
+
+REGLAS CRÍTICAS DE IDENTIFICACIÓN:
+1. "Digestive 4Life", "Transform 4Life", "Immune 4Life", etc. son NOMBRES DE LÍNEA, NO productos individuales.
+2. Cuando detectes una LÍNEA, identifica los productos INDIVIDUALES que se muestran VISUALMENTE en la imagen.
+3. Si en la imagen aparecen 3 cajas de la línea Digestive 4Life, lista los 3 productos individuales que son: Digestive 4Life (enzimas), 4Life Probiotics, 4Life Fiber System Plus.
+4. Si no puedes distinguir los productos individuales de una línea, usa el nombre de la línea pero aclara que es una línea.
+5. `nombre_paquete` = solo si los productos detectados conforman un kit/combo con nombre oficial (ej. "Kit Inmunidad Premium").
+
+Analiza la imagen + título + descripción + mensaje del usuario y responde ÚNICAMENTE con JSON válido:
+{"descripcion_publicacion":"de qué trata la publicación",
+"es_linea": true/false,
+"nombre_linea": "nombre de la línea si aplica, o null",
+"productos_mencionados":["Producto Individual 1","Producto Individual 2"],
+"nombre_paquete":"nombre del kit oficial si aplica, o null",
+"producto_mencionado":"producto o línea principal detectada",
+"contexto_usuario":"qué le interesa al usuario según su mensaje",
+"resumen_para_bot":"texto conciso para que el bot lo use como contexto"}
+Sin texto adicional."""
 
 
 async def analizar_publicacion_facebook(
@@ -491,12 +510,18 @@ async def procesar_contenido(
         else:
             etiqueta = "🖼️ [Imagen recibida]"
     elif tipo_contenido == "publicacion_facebook":
-        resumen_fb  = analisis.get("resumen_para_bot", "")
-        producto_fb = analisis.get("producto_mencionado") or ""
-        if resumen_fb:
-            etiqueta = f"📘 [Publicación: {resumen_fb[:150]}]"
+        productos_fb  = analisis.get("productos_mencionados") or []
+        paquete_fb    = analisis.get("nombre_paquete") or ""
+        nombre_linea  = analisis.get("nombre_linea") or ""
+        producto_fb   = analisis.get("producto_mencionado") or ""
+        if paquete_fb:
+            etiqueta = f"📘 [{paquete_fb}]"
+        elif productos_fb:
+            etiqueta = f"📘 [{', '.join(str(p) for p in productos_fb[:4])}]"
+        elif nombre_linea:
+            etiqueta = f"📘 [Línea {nombre_linea}]"
         elif producto_fb:
-            etiqueta = f"📘 [Publicación sobre: {producto_fb}]"
+            etiqueta = f"📘 [{producto_fb}]"
         else:
             etiqueta = "📘 [Publicación de Facebook]"
     else:
