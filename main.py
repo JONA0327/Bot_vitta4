@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from Filtro_Mensajes import filtrar_y_clasificar, filtro_mensaje, procesar_contenido, analizar_intencion, OPENAI_API_KEY
 from Historial_Conversacion import obtener_historial, formatear_historial_para_ia
 from bot_productos import responder_productos
+from BotLogger import bot_log
 
 load_dotenv()
 
@@ -52,21 +53,16 @@ async def vitta4(request: Request) -> dict[str, Any]:
     if not mensaje and tipo_contenido == "texto":
         raise HTTPException(status_code=400, detail="El campo 'mensaje' es obligatorio para tipo texto.")
 
-    print(f"[vitta4] tel={telefono} tipo={tipo_contenido} msg={mensaje[:60]!r}")
+    await bot_log(instancia, "info", "vitta4", f"tel={telefono} tipo={tipo_contenido} msg={mensaje[:80]!r}")
 
     # ── Extraer identificadores alternativos del payload de Evolution ────────
-    # Evolution puede usar LID (remoteJid = alias numérico) en vez del número real.
-    # También viene remoteJidAlt con el número real. Probamos ambos para ubicar
-    # la conversación correcta en la tabla del CRM.
     evo_data = body.get("evo", {}) or {}
     _remote_jid     = (evo_data.get("data", {}) or {}).get("key", {}).get("remoteJid", "") or ""
     _remote_jid_alt = (evo_data.get("data", {}) or {}).get("key", {}).get("remoteJidAlt", "") or ""
 
     def _strip_jid(jid: str) -> str:
-        """Quita el sufijo @s.whatsapp.net / @lid / etc."""
         return jid.split("@")[0] if "@" in jid else jid
 
-    # Candidatos: telefono ya limpio del CRM + ambos extraídos del evo
     _alt_phones: list[str] = []
     for jid in [_remote_jid, _remote_jid_alt]:
         num = _strip_jid(jid)
@@ -77,7 +73,7 @@ async def vitta4(request: Request) -> dict[str, Any]:
     historial = await obtener_historial(telefono, alternativas=_alt_phones)
     historial_texto = formatear_historial_para_ia(historial)
     if historial_texto:
-        print(f"[vitta4] historial={len(historial)} turnos para tel={telefono}")
+        await bot_log(instancia, "info", "Historial", f"tel={telefono} turnos={len(historial)}")
 
     # ── Procesar contenido según tipo (audio/imagen/facebook/texto) ──────────
     procesado = await procesar_contenido(
@@ -98,7 +94,9 @@ async def vitta4(request: Request) -> dict[str, Any]:
         if intencion_con_ctx:
             procesado["intencion"] = intencion_con_ctx
 
-    print(f"[vitta4] texto_procesado={texto_para_bot[:80]!r} intencion={procesado.get('intencion')}")
+    await bot_log(instancia, "info", "vitta4",
+        f"texto_procesado={texto_para_bot[:100]!r} intencion={procesado.get('intencion', {}).get('intencion','?')}",
+        {"etiqueta": procesado.get("etiqueta"), "intencion": procesado.get("intencion")})
 
     # ── Filtro unificado: detecta pub_facebook + clasifica en un solo paso ───
     clasificacion = await filtrar_y_clasificar(
@@ -109,17 +107,18 @@ async def vitta4(request: Request) -> dict[str, Any]:
         remote_jid=_remote_jid or telefono,
         historial_texto=historial_texto,
     )
-    print(f"[vitta4] filtro={clasificacion}")
+    await bot_log(instancia, "info", "Filtro",
+        f"filtro_active={clasificacion['filtro_active']} pub_facebook={clasificacion['pub_facebook']} tipo_bloqueo={clasificacion.get('tipo_bloqueo')}")
 
     if clasificacion["filtro_active"]:
         tipo_bloqueo = clasificacion["tipo_bloqueo"] or "inapropiado"
         if tipo_bloqueo in ("inapropiado", "prompt_injection"):
-            print(f"[vitta4] BLOQUEADO ({tipo_bloqueo}) — tel={telefono}")
+            await bot_log(instancia, "warning", "Filtro", f"BLOQUEADO ({tipo_bloqueo}) tel={telefono}")
             return {
                 "tipo_bloqueo": "inapropiado",
                 "motivo": f"Mensaje bloqueado: {tipo_bloqueo}.",
             }
-        print(f"[vitta4] PAUSADO ({tipo_bloqueo}) — tel={telefono}")
+        await bot_log(instancia, "warning", "Filtro", f"PAUSADO ({tipo_bloqueo}) tel={telefono}")
         return {
             "tipo_bloqueo": "irrelevante",
             "motivo": "Mensaje fuera del contexto del negocio.",
@@ -128,7 +127,6 @@ async def vitta4(request: Request) -> dict[str, Any]:
     # Si el filtro detectó pub_facebook, forzamos el tipo para que el flujo lo trate igual
     if clasificacion["pub_facebook"] and tipo_contenido != "publicacion_facebook":
         tipo_contenido = "publicacion_facebook"
-        # Re-procesar con el tipo correcto si aún no fue procesado como FB
         if procesado.get("tipo_contenido") != "publicacion_facebook":
             procesado = await procesar_contenido(
                 tipo_contenido="publicacion_facebook",
@@ -145,18 +143,12 @@ async def vitta4(request: Request) -> dict[str, Any]:
     intencion = procesado.get("intencion") or {}
     tipo_intencion = (intencion.get("intencion") or "").lower()
 
-    # Siempre entrar al flujo de productos:
-    # - Si hay historial activo (conversación en curso) → continuar sin importar intención
-    # - Si viene de publicación de Facebook → es un lead de productos
-    # - Si la intención detectada es productos o mixto
-    # - Si la intención es desconocida pero hay conversación → la IA en bot_productos resolverá en contexto
-    # Solo se omite si intención explícita es NEGOCIO y no hay historial previo
     es_flujo_negocio_puro = tipo_intencion == "negocio" and not historial_texto.strip()
-    flujo_productos = not es_flujo_negocio_puro
+    flujo = "negocio/genérico" if es_flujo_negocio_puro else "productos"
+    await bot_log(instancia, "info", "vitta4",
+        f"tipo_intencion={tipo_intencion!r} historial={'sí' if historial_texto else 'no'} flujo={flujo}")
 
-    print(f"[vitta4] tipo_intencion={tipo_intencion!r} historial={'sí' if historial_texto else 'no'} flujo={'productos' if flujo_productos else 'negocio/genérico'}")
-
-    if flujo_productos:
+    if not es_flujo_negocio_puro:
         respuesta = await responder_productos(
             texto_usuario=texto_para_bot,
             historial_texto=historial_texto,
@@ -165,16 +157,17 @@ async def vitta4(request: Request) -> dict[str, Any]:
             instancia=instancia,
         )
         if respuesta:
+            await bot_log(instancia, "info", "Bot", f"respuesta generada ({len(respuesta)} chars) tel={telefono}")
             return {
                 "success": True,
                 "respuesta": respuesta,
                 "texto_procesado": procesado["etiqueta"],
             }
-        # Si falta OPENAI_API_KEY, cae al mensaje de prueba
 
     # ── Respuesta genérica (sin flujo específico o sin clave OpenAI) ──────────
+    await bot_log(instancia, "warning", "vitta4", f"usando respuesta genérica tel={telefono}")
     return {
         "success": True,
         "respuesta": RESPUESTA_PRUEBA,
-        "texto_procesado": procesado["etiqueta"],   # label con ícono para historial de conversación
+        "texto_procesado": procesado["etiqueta"],
     }

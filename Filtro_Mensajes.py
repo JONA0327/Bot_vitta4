@@ -327,6 +327,23 @@ Responde ÚNICAMENTE con JSON válido:
 Sin texto adicional."""
 
 
+async def _descargar_imagen_base64(url: str) -> str | None:
+    """Descarga una imagen y la retorna como data URI base64 para OpenAI Vision."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+            if not content_type.startswith("image/"):
+                content_type = "image/jpeg"
+            import base64
+            b64 = base64.b64encode(resp.content).decode("utf-8")
+            return f"data:{content_type};base64,{b64}"
+    except Exception as e:
+        print(f"[FB·imagen] error descargando {url!r}: {e}")
+        return None
+
+
 async def analizar_publicacion_facebook(
     mensaje: str,
     titulo: str = "",
@@ -340,17 +357,26 @@ async def analizar_publicacion_facebook(
     if not OPENAI_API_KEY:
         return None
 
-    user_content: list = []
+    # Intentar descargar la imagen y convertirla a base64 (evita 400 de CDN de Facebook)
+    imagen_content = None
     if url_imagen:
-        user_content.append(
-            {"type": "image_url", "image_url": {"url": url_imagen, "detail": "low"}}
-        )
+        data_uri = await _descargar_imagen_base64(url_imagen)
+        if data_uri:
+            imagen_content = {"type": "image_url", "image_url": {"url": data_uri, "detail": "low"}}
+            print(f"[FB·imagen] imagen descargada OK ({len(data_uri)} chars)")
+        else:
+            print("[FB·imagen] no se pudo descargar, se usará solo texto")
+
     texto_contexto = (
         f"Mensaje del usuario: {mensaje}\n"
         f"Título de la publicación: {titulo}\n"
         f"Descripción: {descripcion}"
     )
-    user_content.append({"type": "text", "text": texto_contexto})
+    user_content_con_img: list = []
+    if imagen_content:
+        user_content_con_img.append(imagen_content)
+    user_content_con_img.append({"type": "text", "text": texto_contexto})
+    user_content_sin_img: list = [{"type": "text", "text": texto_contexto}]
 
     async def _llamar_openai(contenido: list) -> dict | None:
         try:
@@ -381,13 +407,12 @@ async def analizar_publicacion_facebook(
             print(f"[FB·analisis] error={e}")
         return None
 
-    # Intento 1: con imagen
-    resultado = await _llamar_openai(user_content)
-    # Intento 2: si falló y había imagen, reintentar sin ella (URL inaccesible)
-    if resultado is None and url_imagen:
+    # Intento 1: con imagen descargada como base64
+    resultado = await _llamar_openai(user_content_con_img)
+    # Intento 2: si falló, reintentar solo con texto
+    if resultado is None and imagen_content:
         print("[FB·analisis] reintentando sin imagen")
-        solo_texto = [c for c in user_content if c.get("type") == "text"]
-        resultado = await _llamar_openai(solo_texto)
+        resultado = await _llamar_openai(user_content_sin_img)
     return resultado
 
 
