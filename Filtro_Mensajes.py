@@ -34,6 +34,7 @@ a menos que sea explícitamente:
 
 Esto significa que respuestas como:
   "no", "sí", "ok", "prefiero no", un nombre, "¿para qué?", "no quiero",
+  un número suelto como "7", "8", "10" (respuesta a escala del 1 al 10),
   una queja, una pregunta de precio, silencio seguido de texto breve,
   cualquier respuesta a una pregunta del bot
 ...SIEMPRE SON VÁLIDAS en una conversación activa y NUNCA se bloquean.
