@@ -118,8 +118,19 @@ async def _procesar_y_enviar(data: dict) -> None:
     tipo_intencion = (intencion.get("intencion") or "").lower()
     es_flujo_negocio_puro = tipo_intencion == "negocio" and not historial_texto.strip()
     flujo = "negocio/genérico" if es_flujo_negocio_puro else "productos"
+    from bot_productos import _contar_turnos_bot, PASO3_SIGNAL
+    _turnos_bot = _contar_turnos_bot(historial_texto)
+    _MARKER_PASO3 = "Estoy examinando tu situación"
+    if not historial_texto.strip() or _turnos_bot == 0:
+        paso_flujo = "PASO1"
+    elif _turnos_bot == 1:
+        paso_flujo = "PASO2"
+    elif _MARKER_PASO3 not in historial_texto:
+        paso_flujo = f"PASO3-entrevista (turnos_bot={_turnos_bot})"
+    else:
+        paso_flujo = f"PASO4-recomendacion (turnos_bot={_turnos_bot})"
     await bot_log(instancia, "info", "vitta4",
-        f"tipo_intencion={tipo_intencion!r} historial={'sí' if historial_texto else 'no'} flujo={flujo}")
+        f"tipo_intencion={tipo_intencion!r} historial={'sí' if historial_texto else 'no'} flujo={flujo} paso={paso_flujo}")
 
     respuesta: str | None = None
     if not es_flujo_negocio_puro:
@@ -134,10 +145,19 @@ async def _procesar_y_enviar(data: dict) -> None:
         respuesta = RESPUESTA_PRUEBA
         await bot_log(instancia, "warning", "vitta4", f"usando respuesta genérica tel={telefono}")
 
+    # Detectar si PASO 3 terminó (GPT incluyó [[LISTO]])
+    paso3_listo = PASO3_SIGNAL in respuesta
+    if paso3_listo:
+        respuesta = respuesta.replace(PASO3_SIGNAL, "").strip()
+        await bot_log(instancia, "info", "Bot", f"PASO3 completado → enviando mensaje de transición tel={telefono}")
+
     await bot_log(instancia, "info", "Bot", f"respuesta generada ({len(respuesta)} chars) tel={telefono}")
 
     # ── Enviar al usuario vía CRM /bot-send ───────────────────────────────────
-    if CRM_URL and CRM_TENANT and CRM_API_TOKEN:
+    async def _enviar(texto: str, user_msg: str = "") -> None:
+        if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN):
+            await bot_log(instancia, "warning", "BotSend", "CRM no configurado — respuesta no enviada")
+            return
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.post(
@@ -147,8 +167,8 @@ async def _procesar_y_enviar(data: dict) -> None:
                         "telefono":     telefono,
                         "remote_jid":   remote_jid,
                         "instancia":    instancia,
-                        "respuesta":    respuesta,
-                        "user_message": procesado.get("etiqueta", mensaje[:120]),
+                        "respuesta":    texto,
+                        "user_message": user_msg,
                     },
                 )
                 if resp.status_code not in (200, 201):
@@ -156,8 +176,11 @@ async def _procesar_y_enviar(data: dict) -> None:
                         f"bot-send retornó {resp.status_code}: {resp.text[:200]}")
         except Exception as exc:
             await bot_log(instancia, "error", "BotSend", f"Error en bot-send: {exc}")
-    else:
-        await bot_log(instancia, "warning", "BotSend", "CRM no configurado — respuesta no enviada")
+
+    await _enviar(respuesta, procesado.get("etiqueta", mensaje[:120]))
+
+    if paso3_listo:
+        await _enviar("Estoy examinando tu situación para brindarte la mejor información 🔍")
 
 
 async def _ejecutar_debounce(clave: str) -> None:
@@ -240,13 +263,20 @@ async def vitta4(request: Request) -> dict[str, Any]:
         if num and num != telefono:
             _alt_phones.append(num)
 
-    # ── Debounce: acumular mensajes del mismo contacto y procesar el último ───
+    # ── Debounce: acumular mensajes del mismo contacto y procesar todos juntos ─
     clave = f"{instancia}:{telefono}"
 
     existing = _pending_tasks.get(clave)
     if existing and not existing.done():
+        # Acumular: agregar el nuevo mensaje al historial pendiente
+        prev = _pending_data.get(clave, {})
+        msgs_prev = prev.get("_mensajes_acumulados", [prev["mensaje"]] if prev.get("mensaje") else [])
+        msgs_acum = [m for m in msgs_prev if m] + [mensaje]
         existing.cancel()
-        await bot_log(instancia, "info", "Debounce", f"timer reiniciado tel={telefono}")
+        await bot_log(instancia, "info", "Debounce",
+            f"mensaje #{len(msgs_acum)} acumulado tel={telefono}: {mensaje[:60]!r}")
+    else:
+        msgs_acum = [mensaje]
 
     # Descargar imagen de FB a base64 inmediatamente (la URL de CDN expira pronto)
     thumbnail_url_b64 = None
@@ -258,7 +288,8 @@ async def vitta4(request: Request) -> dict[str, Any]:
             await bot_log(instancia, "warning", "Debounce", "imagen FB no descargable, se usará URL")
 
     _pending_data[clave] = {
-        "mensaje":           mensaje,
+        "mensaje":                "\n".join(msgs_acum),  # todos los mensajes combinados
+        "_mensajes_acumulados":   msgs_acum,
         "tipo_contenido":    tipo_contenido,
         "telefono":          telefono,
         "instancia":         instancia,

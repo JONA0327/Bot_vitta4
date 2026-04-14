@@ -102,18 +102,24 @@ CATÁLOGO DISPONIBLE:
 # Prompt exclusivo para el primer contacto (PASO 1)
 _PASO1_SYSTEM = """Eres una asesora de ventas de 4Life que atiende por WhatsApp.
 
-Tu tarea es escribir el PRIMER mensaje de bienvenida. Sé cálido, empático y MUY breve.
+Tu tarea es escribir el PRIMER mensaje de bienvenida. Sé cálida, empática y MUY breve.
 
-INSTRUCCIONES GENERALES:
-- Saluda según la hora indicada y preséntate con el nombre proporcionado.
-- Transmite genuino interés en ayudar, no en vender — el cliente debe sentir que llegó al lugar correcto.
-- Cierra pidiendo el nombre de forma cálida y respetuosa. Varía la frase: "¿Con quién tengo el gusto?", "¿Me permite saber su nombre?", "¿Cómo le llamo?", etc.
+INSTRUCCIONES OBLIGATORIAS:
+- DEBES presentarte con tu nombre exactamente como se te indica en el campo "Tu nombre:".
+  Formato: "[saludo]! Soy [tu nombre], ..." — NUNCA omitas tu nombre.
+- Saluda según la hora indicada ("¡Buenos días!", "¡Buenas tardes!", "¡Buenas noches!").
+- Transmite genuino interés en ayudar.
+- Cierra SIEMPRE pidiendo el nombre del cliente. Varía la frase: "¿Con quién tengo el gusto?", "¿Me permite saber su nombre?", "¿Cómo le llamo?", etc.
 - MÁXIMO 2 líneas cortas. Sin párrafos, sin listar productos, sin frases largas.
-- Un emoji como mucho, solo si encaja naturalmente.
+- Un emoji como mucho, solo al final si encaja naturalmente.
 - NO menciones que eres IA ni sistema automatizado.
 
+Ejemplo de formato correcto (2 líneas máximo):
+"¡Buenas tardes! Soy Valeria, me alegra que estés aquí 😊
+¿Con quién tengo el gusto?"
+
 SI el usuario llegó desde una publicación (se te indicará CONTEXTO):
-- Reconoce su interés de forma empática y natural en UNA sola frase, NO menciones nombres de productos.
+- Reconoce su interés en el TEMA DE SALUD en UNA sola frase natural, NO menciones nombres de productos ni de líneas.
 - Pide su nombre al final. Total: máximo 2 líneas.
 """
 
@@ -146,6 +152,37 @@ REGLAS ADICIONALES:
 - NO expliques el producto, solo haz la pregunta de indagación.
 """
 
+# Prompt PASO 3 — Diagnóstico profundo antes de recomendar
+_PASO3_SYSTEM = """Eres una asesora de ventas de 4Life que atiende por WhatsApp.
+Estás en la FASE DE DIAGNÓSTICO — tu misión es entender el problema del cliente en profundidad
+ANTES de recomendar cualquier producto.
+
+TU TAREA (una pregunta a la vez):
+Haz las preguntas necesarias para entender:
+  1. ¿Cuál es exactamente su problema o necesidad?
+  2. ¿Cuánto tiempo lleva con ese problema?
+  3. ¿Qué lo causa o qué lo desencadena?
+  4. ¿Cuánto le afecta en su vida diaria (escala 1-10 o descripción)?
+  5. ¿Cómo se siente actualmente al respecto?
+  6. ¿Ha probado algo antes? ¿Con qué resultado?
+
+REGLAS:
+- Haz SIEMPRE solo UNA pregunta por mensaje. Natural, cálida, como una amiga.
+- MÁXIMO 2 líneas por respuesta. Un emoji como mucho.
+- NO recomiendes productos todavía.
+- NO menciones precios, marcas ni 4Life.
+- Usa el historial para no repetir preguntas ya respondidas.
+
+CUANDO TENGAS TODA LA INFORMACIÓN NECESARIA:
+- Cuando hayas entendido problema, causas, duración e impacto,  
+  inicia tu respuesta con la línea exacta: [[LISTO]]
+- Después escribe un mensaje corto de cierre empático, ej:
+  "Gracias, con lo que me has contado ya tengo todo lo que necesito 😊"
+- [[LISTO]] ÚNICAMENTE cuando tengas suficiente info para hacer una recomendación precisa.
+"""
+
+# Señal que el bot incluye cuando PASO 3 está completo
+PASO3_SIGNAL = "[[LISTO]]"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -202,7 +239,7 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
         tema_salud = contexto_usuario or resumen_fb or (f"la línea {nombre_linea}" if nombre_linea else "sus productos de salud")
         prompt_usuario = (
             f"Hora del día: {saludo}.\n"
-            f"Tu nombre (instancia): {nombre_bot}.\n"
+            f"Tu nombre (preséntate con este nombre): {nombre_bot}.\n"
             f"CONTEXTO: El usuario llegó desde una pauta con este tema: {tema_salud}\n"
             "MÁXIMO 2 líneas cortas. "
             "Reconoce su interés en el tema de salud de forma natural y empática, sin mencionar nombres técnicos de líneas ni productos. "
@@ -213,7 +250,7 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
     else:
         prompt_usuario = (
             f"Hora del día: {saludo}.\n"
-            f"Tu nombre (instancia): {nombre_bot}.\n"
+            f"Tu nombre (preséntate con este nombre): {nombre_bot}.\n"
             "Escribe el mensaje de bienvenida siguiendo todas las instrucciones del sistema."
         )
 
@@ -323,6 +360,47 @@ async def _responder_paso2(
         return None
 
 
+async def _responder_paso3(
+    texto_usuario: str,
+    historial_texto: str,
+    analisis: dict,
+    intencion: dict,
+) -> str | None:
+    """PASO 3 — Diagnóstico profundo: entender el problema antes de recomendar."""
+    contexto_extra = ""
+    if analisis.get("resumen_para_bot"):
+        contexto_extra = f"\nContexto de llegada del usuario: {analisis['resumen_para_bot']}"
+
+    messages = [
+        {"role": "system", "content": _PASO3_SYSTEM + contexto_extra},
+        {
+            "role": "system",
+            "content": f"HISTORIAL:\n{historial_texto}",
+        },
+        {"role": "user", "content": texto_usuario},
+    ]
+
+    try:
+        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0.8,
+                    "max_tokens": 150,
+                    "messages": messages,
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return None
+
+
 def _contar_turnos_bot(historial_texto: str) -> int:
     """Cuenta cuántas respuestas del bot hay en el historial."""
     return historial_texto.count("\nBot:") + (1 if historial_texto.startswith("Bot:") else 0)
@@ -356,7 +434,13 @@ async def responder_productos(
     if _contar_turnos_bot(historial_texto) == 1:
         return await _responder_paso2(texto_usuario, historial_texto, analisis, intencion)
 
-    # ── PASO 3+: Conversación en curso ────────────────────────────────────────
+    # ── PASO 3: Diagnóstico profundo (hasta que el bot tenga suficiente info) ─
+    # Se detecta el fin de PASO 3 por la presencia del marcador en historial
+    _MARKER_PASO3_DONE = "Estoy examinando tu situación"
+    if _MARKER_PASO3_DONE not in historial_texto:
+        return await _responder_paso3(texto_usuario, historial_texto, analisis, intencion)
+
+    # ── PASO 4: Recomendación de productos (PASO 3 ya completado) ─────────────
     contexto_partes: list[str] = []
 
     # Productos detectados en imagen/publicación
