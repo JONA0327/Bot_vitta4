@@ -261,16 +261,25 @@ async def _procesar_y_enviar(data: dict) -> None:
     except Exception as e:
         await bot_log(instancia, "error", "Pautas", f"Error checando pautas: {e}")
 
-    respuesta: str | None = None
+    resultado = None
     if not es_flujo_negocio_puro:
-        respuesta = await responder_productos(
+        resultado = await responder_productos(
             texto_usuario=texto_para_bot,
             historial_texto=historial_texto,
             analisis=procesado.get("analisis") or {},
             intencion=intencion,
             instancia=instancia,
         )
-    if not respuesta:
+
+    respuesta: str | None = None
+    medios = None
+    if isinstance(resultado, dict):
+        respuesta = resultado.get("texto")
+        medios = resultado.get("medios")
+    else:
+        respuesta = resultado
+
+    if not respuesta and not medios:
         respuesta = RESPUESTA_PRUEBA
         await bot_log(instancia, "warning", "vitta4", f"usando respuesta genérica tel={telefono}")
 
@@ -283,7 +292,7 @@ async def _procesar_y_enviar(data: dict) -> None:
     await bot_log(instancia, "info", "Bot", f"respuesta generada ({len(respuesta)} chars) tel={telefono}")
 
     # ── Enviar al usuario vía CRM /bot-send ───────────────────────────────────
-    async def _enviar(texto: str, user_msg: str = "") -> None:
+    async def _enviar(texto: str, user_msg: str = "", medios: list | None = None) -> None:
         if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN):
             await bot_log(instancia, "warning", "BotSend", "CRM no configurado — respuesta no enviada")
             return
@@ -292,13 +301,24 @@ async def _procesar_y_enviar(data: dict) -> None:
                 resp = await client.post(
                     f"{CRM_URL}/api/v1/{CRM_TENANT}/bot-send",
                     headers={"X-API-Key": CRM_API_TOKEN, "Content-Type": "application/json"},
-                    json={
-                        "telefono":     telefono,
-                        "remote_jid":   remote_jid,
-                        "instancia":    instancia,
-                        "respuesta":    texto,
-                        "user_message": user_msg,
-                    },
+                    json=(
+                        {
+                            "telefono":     telefono,
+                            "remote_jid":   remote_jid,
+                            "instancia":    instancia,
+                            "respuesta":    texto,
+                            "user_message": user_msg,
+                        }
+                        if not medios
+                        else {
+                            "telefono":     telefono,
+                            "remote_jid":   remote_jid,
+                            "instancia":    instancia,
+                            "respuesta":    texto,
+                            "user_message": user_msg,
+                            "medios":        medios,
+                        }
+                    ),
                 )
                 if resp.status_code not in (200, 201):
                     await bot_log(instancia, "error", "BotSend",
@@ -306,7 +326,7 @@ async def _procesar_y_enviar(data: dict) -> None:
         except Exception as exc:
             await bot_log(instancia, "error", "BotSend", f"Error en bot-send: {exc}")
 
-    await _enviar(respuesta, procesado.get("etiqueta", mensaje[:120]))
+    await _enviar(respuesta, procesado.get("etiqueta", mensaje[:120]), medios=medios)
 
     if paso3_listo:
         await _enviar("Estoy examinando tu situación para brindarte la mejor información 🔍")
