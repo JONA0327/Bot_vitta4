@@ -283,11 +283,21 @@ async def _procesar_y_enviar(data: dict) -> None:
         respuesta = RESPUESTA_PRUEBA
         await bot_log(instancia, "warning", "vitta4", f"usando respuesta genérica tel={telefono}")
 
-    # Detectar si PASO 3 terminó (GPT incluyó [[LISTO]] )
-    paso3_listo = PASO3_SIGNAL in respuesta
-    if paso3_listo:
-        respuesta = respuesta.replace(PASO3_SIGNAL, "").strip()
-        await bot_log(instancia, "info", "Bot", f"PASO3 completado → enviando mensaje de transición tel={telefono}")
+    # Detectar si PASO 3 terminó (GPT incluyó [[LISTO]] o frases comunes de cierre)
+    paso3_listo = False
+    try:
+        if respuesta and isinstance(respuesta, str):
+            if PASO3_SIGNAL in respuesta:
+                paso3_listo = True
+                respuesta = respuesta.replace(PASO3_SIGNAL, "").strip()
+                await bot_log(instancia, "info", "Bot", f"PASO3 completado (marker) → enviando mensaje de transición tel={telefono}")
+            else:
+                # Heurística: frases típicas que indican que la entrevista terminó
+                if re.search(r"(ya tengo todo lo que necesito|tengo todo lo que necesito|ya tengo toda la información que necesito|con lo que me has contado ya tengo todo lo que necesito|perfecto, con lo que me has contado ya tengo todo lo que necesito)", respuesta, re.IGNORECASE):
+                    paso3_listo = True
+                    await bot_log(instancia, "info", "Bot", f"PASO3 completado (phrase) → enviando mensaje de transición tel={telefono}")
+    except Exception:
+        pass
 
     await bot_log(instancia, "info", "Bot", f"respuesta generada ({len(respuesta)} chars) tel={telefono}")
 
