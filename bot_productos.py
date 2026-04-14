@@ -138,11 +138,12 @@ PREGUNTA DE INDAGACIÓN A USAR:
 
 REGLAS ADICIONALES:
 - Habla de tú, sé muy natural y humano/a.
-- Máximo 3–4 líneas en total.
-- Emojis con moderación.
+- MÁXIMO 2 líneas cortas en total. Sin párrafos largos.
+- Un emoji como mucho.
 - NO saludes de nuevo (ya saludaste).
 - NO menciones que eres IA, bot o sistema automatizado.
 - NO repitas información del mensaje anterior.
+- NO expliques el producto, solo haz la pregunta de indagación.
 """
 
 
@@ -312,7 +313,7 @@ async def _responder_paso2(
                 json={
                     "model": "gpt-4o-mini",
                     "temperature": 0.8,
-                    "max_tokens": 350,
+                    "max_tokens": 120,
                     "messages": messages,
                 },
             )

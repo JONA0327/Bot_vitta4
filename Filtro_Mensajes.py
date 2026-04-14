@@ -329,6 +329,11 @@ Sin texto adicional."""
 
 async def _descargar_imagen_base64(url: str) -> str | None:
     """Descarga una imagen y la retorna como data URI base64 para OpenAI Vision."""
+    if not url:
+        return None
+    # Si ya es un data URI (base64 embebido), devolverlo tal cual
+    if url.startswith("data:"):
+        return url
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
