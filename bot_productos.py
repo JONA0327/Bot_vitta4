@@ -280,7 +280,7 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
         return None
 
 
-def _construir_pregunta_indagacion(analisis: dict, intencion: dict) -> str:
+def _construir_pregunta_indagacion(analisis: dict, intencion: dict, historial_texto: str = "") -> str:
     """
     Construye la pregunta de indagación de necesidad según el contexto.
     Si hay productos detectados de FB/imagen: pregunta qué quieren mejorar con esos productos.
@@ -296,16 +296,46 @@ def _construir_pregunta_indagacion(analisis: dict, intencion: dict) -> str:
     if producto_principal and producto_principal not in productos:
         productos.insert(0, producto_principal)
 
+    # Si no se detectaron productos en el mensaje actual, buscarlos en el historial
+    # (en PASO1 el anuncio de FB quedó registrado en el historial como primer turno)
+    resumen_historial = ""
+    if not productos and not analisis.get("resumen_para_bot") and not analisis.get("descripcion_publicacion"):
+        import re
+        # Buscar productos mencionados en la primera respuesta del bot del historial
+        match_productos = re.search(
+            r"\[CONTEXTO_ANUNCIO\].*?(?:Titulo anuncio|titulo).*?:\s*(.+)",
+            historial_texto, re.IGNORECASE | re.DOTALL
+        )
+        if match_productos:
+            linea = match_productos.group(1).split("\n")[0].strip()
+            if linea:
+                productos = [linea]
+        # También buscar lista de productos entre corchetes en el historial del usuario
+        if not productos:
+            match_lista = re.search(r"\[([^\[\]]+(?:,|Stix|Life|Tea|Pre|Aloe)[^\[\]]+)\]", historial_texto)
+            if match_lista:
+                productos = [p.strip() for p in match_lista.group(1).split(",") if p.strip()]
+        # Si hay contexto en el historial de una publicación FB, extraer resumen
+        if not productos:
+            match_resumen = re.search(
+                r"(?:Texto anuncio|descripci[oó]n):\s*\"?(.{10,120})",
+                historial_texto, re.IGNORECASE
+            )
+            if match_resumen:
+                resumen_historial = match_resumen.group(1).strip().rstrip('"')
+
     tiene_productos_fb = bool(
         productos
         or analisis.get("resumen_para_bot")
         or analisis.get("descripcion_publicacion")
+        or resumen_historial
     )
 
     if tiene_productos_fb:
         lista = ", ".join(productos[:3]) if productos else "este producto"
+        contexto = lista if productos else (analisis.get("resumen_para_bot") or resumen_historial or "este producto")
         return (
-            f"El cliente llegó interesado en: {lista}. "
+            f"El cliente llegó interesado en: {contexto}. "
             "Pregunta de forma natural qué quiere MEJORAR o FORTALECER en relación a esos productos "
             "(ej. digestión, energía, inmunidad, peso, etc.). "
             "NO ofrezcas la opción de 'generar ingresos' — el cliente está enfocado en productos. "
@@ -327,7 +357,7 @@ async def _responder_paso2(
     intencion: dict,
 ) -> str | None:
     """PASO 2 — Manejo del nombre + indagación de necesidad."""
-    pregunta = _construir_pregunta_indagacion(analisis, intencion)
+    pregunta = _construir_pregunta_indagacion(analisis, intencion, historial_texto)
     system = _PASO2_SYSTEM.format(pregunta_indagacion=pregunta)
 
     messages = [
