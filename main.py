@@ -1,13 +1,20 @@
 
+import asyncio
 import os
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+import httpx
 from dotenv import load_dotenv
-from Filtro_Mensajes import filtrar_y_clasificar, filtro_mensaje, procesar_contenido, analizar_intencion, OPENAI_API_KEY
-from Historial_Conversacion import obtener_historial, formatear_historial_para_ia
+from fastapi import FastAPI, HTTPException, Request
+
+from BotLogger import CRM_API_TOKEN, CRM_TENANT, CRM_URL, bot_log
 from bot_productos import responder_productos
-from BotLogger import bot_log
+from Filtro_Mensajes import (
+    analizar_intencion,
+    filtrar_y_clasificar,
+    procesar_contenido,
+)
+from Historial_Conversacion import formatear_historial_para_ia, obtener_historial
 
 load_dotenv()
 
@@ -18,7 +25,154 @@ RESPUESTA_PRUEBA = os.getenv(
     "BOT_RESPUESTA_PRUEBA",
     "¡Hola! Soy el Bot Vitta4. Tu mensaje llegó correctamente. 🤖",
 )
+# Segundos de espera antes de procesar (0 = sin debounce)
+DEBOUNCE_SECS = int(os.getenv("BOT_DEBOUNCE_SECS", "20"))
 
+# ── Estado de debounce (clave = "instancia:telefono") ────────────────────────
+_pending_tasks: dict[str, asyncio.Task] = {}
+_pending_data: dict[str, dict] = {}
+
+
+# ── Procesamiento y envío (llamado tras el debounce) ─────────────────────────
+
+async def _procesar_y_enviar(data: dict) -> None:
+    """Procesa el último mensaje acumulado y lo envía al usuario vía CRM /bot-send."""
+    mensaje        = data.get("mensaje", "")
+    tipo_contenido = data.get("tipo_contenido", "texto")
+    telefono       = data.get("telefono", "desconocido")
+    instancia      = data.get("instancia", "")
+    url_media      = data.get("url_media", "")
+    caption        = data.get("caption", "")
+    titulo_fb      = data.get("titulo_fb", "")
+    descripcion_fb = data.get("descripcion_fb", "")
+    thumbnail_url  = data.get("thumbnail_url", "")
+    remote_jid     = data.get("remote_jid", "")
+    alt_phones     = data.get("alt_phones", [])
+
+    # ── Historial ─────────────────────────────────────────────────────────────
+    historial = await obtener_historial(telefono, alternativas=alt_phones)
+    historial_texto = formatear_historial_para_ia(historial)
+    if historial_texto:
+        await bot_log(instancia, "info", "Historial", f"tel={telefono} turnos={len(historial)}")
+
+    # ── Procesar contenido ────────────────────────────────────────────────────
+    procesado = await procesar_contenido(
+        tipo_contenido=tipo_contenido,
+        mensaje=mensaje,
+        url_media=url_media,
+        caption=caption,
+        titulo_fb=titulo_fb,
+        descripcion_fb=descripcion_fb,
+        thumbnail_url=thumbnail_url,
+    )
+    texto_para_bot = procesado["texto_procesado"]
+
+    if historial_texto:
+        texto_con_historial = f"{historial_texto}\nUsuario: {texto_para_bot}"
+        intencion_con_ctx = await analizar_intencion(texto_con_historial)
+        if intencion_con_ctx:
+            procesado["intencion"] = intencion_con_ctx
+
+    await bot_log(instancia, "info", "vitta4",
+        f"texto_procesado={texto_para_bot[:100]!r} intencion={procesado.get('intencion', {}).get('intencion','?')}",
+        {"etiqueta": procesado.get("etiqueta"), "intencion": procesado.get("intencion")})
+
+    # ── Filtro ────────────────────────────────────────────────────────────────
+    clasificacion = await filtrar_y_clasificar(
+        mensaje=mensaje,
+        tipo_original=tipo_contenido,
+        url_publicidad=thumbnail_url,
+        telefono=telefono,
+        remote_jid=remote_jid or telefono,
+        historial_texto=historial_texto,
+    )
+    await bot_log(instancia, "info", "Filtro",
+        f"filtro_active={clasificacion['filtro_active']} pub_facebook={clasificacion['pub_facebook']} tipo_bloqueo={clasificacion.get('tipo_bloqueo')}")
+
+    if clasificacion["filtro_active"]:
+        tipo_bloqueo = clasificacion["tipo_bloqueo"] or "inapropiado"
+        await bot_log(instancia, "warning", "Filtro",
+            f"BLOQUEADO post-debounce ({tipo_bloqueo}) tel={telefono}")
+        return
+
+    # ── Corrección de tipo si filtro detectó Facebook ─────────────────────────
+    if clasificacion["pub_facebook"] and tipo_contenido != "publicacion_facebook":
+        tipo_contenido = "publicacion_facebook"
+        procesado = await procesar_contenido(
+            tipo_contenido="publicacion_facebook",
+            mensaje=mensaje,
+            url_media=url_media,
+            caption=caption,
+            titulo_fb=titulo_fb,
+            descripcion_fb=descripcion_fb,
+            thumbnail_url=thumbnail_url,
+        )
+        texto_para_bot = procesado["texto_procesado"]
+
+    # ── Generar respuesta ─────────────────────────────────────────────────────
+    intencion = procesado.get("intencion") or {}
+    tipo_intencion = (intencion.get("intencion") or "").lower()
+    es_flujo_negocio_puro = tipo_intencion == "negocio" and not historial_texto.strip()
+    flujo = "negocio/genérico" if es_flujo_negocio_puro else "productos"
+    await bot_log(instancia, "info", "vitta4",
+        f"tipo_intencion={tipo_intencion!r} historial={'sí' if historial_texto else 'no'} flujo={flujo}")
+
+    respuesta: str | None = None
+    if not es_flujo_negocio_puro:
+        respuesta = await responder_productos(
+            texto_usuario=texto_para_bot,
+            historial_texto=historial_texto,
+            analisis=procesado.get("analisis") or {},
+            intencion=intencion,
+            instancia=instancia,
+        )
+    if not respuesta:
+        respuesta = RESPUESTA_PRUEBA
+        await bot_log(instancia, "warning", "vitta4", f"usando respuesta genérica tel={telefono}")
+
+    await bot_log(instancia, "info", "Bot", f"respuesta generada ({len(respuesta)} chars) tel={telefono}")
+
+    # ── Enviar al usuario vía CRM /bot-send ───────────────────────────────────
+    if CRM_URL and CRM_TENANT and CRM_API_TOKEN:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    f"{CRM_URL}/api/v1/{CRM_TENANT}/bot-send",
+                    headers={"X-API-Key": CRM_API_TOKEN, "Content-Type": "application/json"},
+                    json={
+                        "telefono":     telefono,
+                        "remote_jid":   remote_jid,
+                        "instancia":    instancia,
+                        "respuesta":    respuesta,
+                        "user_message": procesado.get("etiqueta", mensaje[:120]),
+                    },
+                )
+                if resp.status_code not in (200, 201):
+                    await bot_log(instancia, "error", "BotSend",
+                        f"bot-send retornó {resp.status_code}: {resp.text[:200]}")
+        except Exception as exc:
+            await bot_log(instancia, "error", "BotSend", f"Error en bot-send: {exc}")
+    else:
+        await bot_log(instancia, "warning", "BotSend", "CRM no configurado — respuesta no enviada")
+
+
+async def _ejecutar_debounce(clave: str) -> None:
+    """Tarea asyncio: espera DEBOUNCE_SECS y procesa el último mensaje acumulado."""
+    try:
+        await asyncio.sleep(DEBOUNCE_SECS)
+    except asyncio.CancelledError:
+        return  # cancelado por un mensaje más reciente
+
+    data = _pending_data.pop(clave, None)
+    _pending_tasks.pop(clave, None)
+    if not data:
+        return
+    await bot_log(data.get("instancia", ""), "info", "Debounce",
+        f"procesando tras {DEBOUNCE_SECS}s tel={data.get('telefono', '')}")
+    await _procesar_y_enviar(data)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
@@ -32,7 +186,7 @@ async def vitta4(request: Request) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail="El body debe ser JSON válido.") from exc
 
-    # Validar token entrante del CRM (solo si CRM_INCOMING_TOKEN está definido)
+    # Validar token entrante del CRM
     if INCOMING_TOKEN:
         request_token = body.get("api_token") or request.headers.get("X-API-Token")
         if request_token != INCOMING_TOKEN:
@@ -42,8 +196,6 @@ async def vitta4(request: Request) -> dict[str, Any]:
     tipo_contenido = body.get("tipo_contenido", "texto")
     telefono       = body.get("telefono", "desconocido")
     instancia      = body.get("instancia", "")
-
-    # Campos de media y publicación de Facebook
     url_media      = body.get("url_media", "")
     caption        = body.get("caption", "")
     titulo_fb      = body.get("titulo_fb", "")
@@ -55,8 +207,8 @@ async def vitta4(request: Request) -> dict[str, Any]:
 
     await bot_log(instancia, "info", "vitta4", f"tel={telefono} tipo={tipo_contenido} msg={mensaje[:80]!r}")
 
-    # ── Extraer identificadores alternativos del payload de Evolution ────────
-    evo_data = body.get("evo", {}) or {}
+    # Extraer remoteJid del payload de Evolution
+    evo_data        = body.get("evo", {}) or {}
     _remote_jid     = (evo_data.get("data", {}) or {}).get("key", {}).get("remoteJid", "") or ""
     _remote_jid_alt = (evo_data.get("data", {}) or {}).get("key", {}).get("remoteJidAlt", "") or ""
 
@@ -69,105 +221,29 @@ async def vitta4(request: Request) -> dict[str, Any]:
         if num and num != telefono:
             _alt_phones.append(num)
 
-    # ── Historial de conversación desde CRM ──────────────────────────────────
-    historial = await obtener_historial(telefono, alternativas=_alt_phones)
-    historial_texto = formatear_historial_para_ia(historial)
-    if historial_texto:
-        await bot_log(instancia, "info", "Historial", f"tel={telefono} turnos={len(historial)}")
+    # ── Debounce: acumular mensajes del mismo contacto y procesar el último ───
+    clave = f"{instancia}:{telefono}"
 
-    # ── Procesar contenido según tipo (audio/imagen/facebook/texto) ──────────
-    procesado = await procesar_contenido(
-        tipo_contenido=tipo_contenido,
-        mensaje=mensaje,
-        url_media=url_media,
-        caption=caption,
-        titulo_fb=titulo_fb,
-        descripcion_fb=descripcion_fb,
-        thumbnail_url=thumbnail_url,
-    )
-    texto_para_bot = procesado["texto_procesado"]
+    existing = _pending_tasks.get(clave)
+    if existing and not existing.done():
+        existing.cancel()
+        await bot_log(instancia, "info", "Debounce", f"timer reiniciado tel={telefono}")
 
-    # Reanalizar intención con contexto del historial si hay conversación previa
-    if historial_texto:
-        texto_con_historial = f"{historial_texto}\nUsuario: {texto_para_bot}"
-        intencion_con_ctx = await analizar_intencion(texto_con_historial)
-        if intencion_con_ctx:
-            procesado["intencion"] = intencion_con_ctx
-
-    await bot_log(instancia, "info", "vitta4",
-        f"texto_procesado={texto_para_bot[:100]!r} intencion={procesado.get('intencion', {}).get('intencion','?')}",
-        {"etiqueta": procesado.get("etiqueta"), "intencion": procesado.get("intencion")})
-
-    # ── Filtro unificado: detecta pub_facebook + clasifica en un solo paso ───
-    clasificacion = await filtrar_y_clasificar(
-        mensaje=mensaje,
-        tipo_original=tipo_contenido,
-        url_publicidad=thumbnail_url,
-        telefono=telefono,
-        remote_jid=_remote_jid or telefono,
-        historial_texto=historial_texto,
-    )
-    await bot_log(instancia, "info", "Filtro",
-        f"filtro_active={clasificacion['filtro_active']} pub_facebook={clasificacion['pub_facebook']} tipo_bloqueo={clasificacion.get('tipo_bloqueo')}")
-
-    if clasificacion["filtro_active"]:
-        tipo_bloqueo = clasificacion["tipo_bloqueo"] or "inapropiado"
-        if tipo_bloqueo in ("inapropiado", "prompt_injection"):
-            await bot_log(instancia, "warning", "Filtro", f"BLOQUEADO ({tipo_bloqueo}) tel={telefono}")
-            return {
-                "tipo_bloqueo": "inapropiado",
-                "motivo": f"Mensaje bloqueado: {tipo_bloqueo}.",
-            }
-        await bot_log(instancia, "warning", "Filtro", f"PAUSADO ({tipo_bloqueo}) tel={telefono}")
-        return {
-            "tipo_bloqueo": "irrelevante",
-            "motivo": "Mensaje fuera del contexto del negocio.",
-        }
-
-    # Si el filtro detectó pub_facebook, forzamos el tipo para que el flujo lo trate igual
-    if clasificacion["pub_facebook"] and tipo_contenido != "publicacion_facebook":
-        tipo_contenido = "publicacion_facebook"
-        if procesado.get("tipo_contenido") != "publicacion_facebook":
-            procesado = await procesar_contenido(
-                tipo_contenido="publicacion_facebook",
-                mensaje=mensaje,
-                url_media=url_media,
-                caption=caption,
-                titulo_fb=titulo_fb,
-                descripcion_fb=descripcion_fb,
-                thumbnail_url=thumbnail_url,
-            )
-            texto_para_bot = procesado["texto_procesado"]
-
-    # ── Respuesta según intención detectada ──────────────────────────────────
-    intencion = procesado.get("intencion") or {}
-    tipo_intencion = (intencion.get("intencion") or "").lower()
-
-    es_flujo_negocio_puro = tipo_intencion == "negocio" and not historial_texto.strip()
-    flujo = "negocio/genérico" if es_flujo_negocio_puro else "productos"
-    await bot_log(instancia, "info", "vitta4",
-        f"tipo_intencion={tipo_intencion!r} historial={'sí' if historial_texto else 'no'} flujo={flujo}")
-
-    if not es_flujo_negocio_puro:
-        respuesta = await responder_productos(
-            texto_usuario=texto_para_bot,
-            historial_texto=historial_texto,
-            analisis=procesado.get("analisis") or {},
-            intencion=intencion,
-            instancia=instancia,
-        )
-        if respuesta:
-            await bot_log(instancia, "info", "Bot", f"respuesta generada ({len(respuesta)} chars) tel={telefono}")
-            return {
-                "success": True,
-                "respuesta": respuesta,
-                "texto_procesado": procesado["etiqueta"],
-            }
-
-    # ── Respuesta genérica (sin flujo específico o sin clave OpenAI) ──────────
-    await bot_log(instancia, "warning", "vitta4", f"usando respuesta genérica tel={telefono}")
-    return {
-        "success": True,
-        "respuesta": RESPUESTA_PRUEBA,
-        "texto_procesado": procesado["etiqueta"],
+    _pending_data[clave] = {
+        "mensaje":        mensaje,
+        "tipo_contenido": tipo_contenido,
+        "telefono":       telefono,
+        "instancia":      instancia,
+        "url_media":      url_media,
+        "caption":        caption,
+        "titulo_fb":      titulo_fb,
+        "descripcion_fb": descripcion_fb,
+        "thumbnail_url":  thumbnail_url,
+        "remote_jid":     _remote_jid,
+        "alt_phones":     _alt_phones,
     }
+    _pending_tasks[clave] = asyncio.create_task(_ejecutar_debounce(clave))
+
+    await bot_log(instancia, "info", "Debounce",
+        f"en cola, procesará en {DEBOUNCE_SECS}s tel={telefono}")
+    return {"debounced": True}
