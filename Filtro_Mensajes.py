@@ -362,7 +362,7 @@ async def analizar_publicacion_facebook(
                 json={
                     "model": "gpt-4o",
                     "temperature": 0,
-                    "max_tokens": 400,
+                    "max_tokens": 700,
                     "messages": [
                         {"role": "system", "content": _FACEBOOK_SYSTEM},
                         {"role": "user", "content": user_content},

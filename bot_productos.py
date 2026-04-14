@@ -102,15 +102,20 @@ CATÁLOGO DISPONIBLE:
 # Prompt exclusivo para el primer contacto (PASO 1)
 _PASO1_SYSTEM = """Eres una asesora de ventas de 4Life que atiende por WhatsApp.
 
-Tu tarea es escribir el PRIMER mensaje de bienvenida. Sé breve, respetuoso y directo.
+Tu tarea es escribir el PRIMER mensaje de bienvenida. Sé cálido, empático y breve.
 
-INSTRUCCIONES:
+INSTRUCCIONES GENERALES:
 - Saluda según la hora indicada y preséntate con el nombre proporcionado.
-- En UNA sola oración menciona que puedes orientarles según lo que buscan.
-- Cierra pidiendo el nombre con una frase corta y respetuosa. Varía: "¿Con quién tengo el gusto?", "¿Me permite saber su nombre?", "¿Cómo le llamo?", etc.
-- Máximo 3 líneas en total. Sin párrafos largos, sin detallar productos ni promociones.
-- Un emoji como mucho, solo si encaja.
+- Transmite genuino interés en ayudar, no en vender — el cliente debe sentir que llegó al lugar correcto.
+- Cierra pidiendo el nombre de forma cálida y respetuosa. Varía la frase: "¿Con quién tengo el gusto?", "¿Me permite saber su nombre?", "¿Cómo le llamo?", etc.
+- Máximo 3–4 líneas. Sin párrafos largos, sin listar productos.
+- Un emoji como mucho, solo si encaja naturalmente.
 - NO menciones que eres IA ni sistema automatizado.
+
+SI el usuario llegó desde una publicación (se te indicará CONTEXTO):
+- Reconoce su interés de forma empática y natural. Ej: "Vi que le llamó la atención lo relacionado con [tema de salud]", NO menciones nombres de líneas ni productos directamente en el saludo.
+- El objetivo es que se sienta bienvenido y acompañado, no que sienta que le están vendiendo de inmediato.
+- Pide su nombre al final.
 """
 
 # Prompt para PASO 2 — manejo del nombre + indagación de necesidad
@@ -190,18 +195,19 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
     )
 
     if tiene_fb:
-        lista_productos = ", ".join(productos_fb[:3]) if productos_fb else "estos productos"
         resumen_fb = analisis.get("resumen_para_bot") or analisis.get("descripcion_publicacion") or ""
-        contexto_fb = f"Productos detectados en la pauta: {lista_productos}."
-        if resumen_fb:
-            contexto_fb += f" Descripción: {resumen_fb}"
+        contexto_usuario = analisis.get("contexto_usuario") or ""
+        nombre_linea = analisis.get("nombre_linea") or ""
+        # Usar el resumen/contexto para transmitir el TEMA DE SALUD, no el nombre técnico de línea/producto
+        tema_salud = contexto_usuario or resumen_fb or (f"la línea {nombre_linea}" if nombre_linea else "sus productos de salud")
         prompt_usuario = (
             f"Hora del día: {saludo}.\n"
             f"Tu nombre (instancia): {nombre_bot}.\n"
-            f"CONTEXTO: {contexto_fb}\n"
-            "Escribe el mensaje de bienvenida (máximo 3 líneas) mencionando esos productos específicos "
-            "de forma natural, como si los conocieras y pudieras orientar al cliente sobre ellos. "
-            "NO menciones '4Life' ni 'generar ingresos'. "
+            f"CONTEXTO: El usuario llegó desde una pauta con este tema: {tema_salud}\n"
+            "Escribe el mensaje de bienvenida empático (máximo 3-4 líneas). "
+            "Reconoce su interés en el tema de salud detectado de forma natural, sin mencionar nombres técnicos de líneas ni productos. "
+            "Ej: 'Vi que le interesó lo relacionado con la digestión/salud digestiva/bienestar...' "
+            "NO menciones '4Life' como marca ni 'generar ingresos'. "
             "Cierra pidiendo el nombre respetuosamente."
         )
     else:
