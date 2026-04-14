@@ -2,6 +2,8 @@
 import asyncio
 import os
 from typing import Any
+import re
+from difflib import SequenceMatcher
 
 import httpx
 from dotenv import load_dotenv
@@ -32,6 +34,87 @@ DEBOUNCE_SECS = int(os.getenv("BOT_DEBOUNCE_SECS", "20"))
 # ── Estado de debounce (clave = "instancia:telefono") ────────────────────────
 _pending_tasks: dict[str, asyncio.Task] = {}
 _pending_data: dict[str, dict] = {}
+
+
+# ── Helpers: consultar pautas activas en el CRM y comparar con publicación FB
+async def _buscar_pautas_activas() -> list:
+    """Consulta el módulo 'pautas' del CRM y retorna la lista de registros activos.
+    Si no hay CRM configurado o falla la llamada, retorna lista vacía.
+    """
+    if not CRM_URL or not CRM_TENANT or not CRM_API_TOKEN:
+        return []
+    url = f"{CRM_URL}/api/v1/{CRM_TENANT}/pautas?per_page=200"
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(url, headers={"X-API-Key": CRM_API_TOKEN})
+            resp.raise_for_status()
+            data = resp.json()
+            records = []
+            if isinstance(data, dict) and data.get("data") is not None:
+                records = data.get("data") or []
+            elif isinstance(data, list):
+                records = data
+    except Exception as e:
+        print(f"[Pautas] error al consultar CRM: {e}")
+        return []
+
+    def _activo(r: dict) -> bool:
+        v = None
+        for k in ("status", "STATUS", "activo", "Activo", "Activo_Pauta", "estado"):
+            if k in r:
+                v = str(r[k]).lower()
+                break
+        if v is None:
+            # intentar campo genérico
+            v = str(r.get("status", r.get("STATUS", ""))).lower()
+        return v in ("activo", "true", "1", "si", "sí", "enabled")
+
+    return [r for r in (records or []) if _activo(r)]
+
+
+def _normalize_text(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
+def _score_pauta_match(pauta: dict, fb: dict) -> float:
+    """Devuelve un puntaje (float) que indica cuán probable es que la pauta
+    corresponda a la publicación de Facebook (`fb`)."""
+    pauta_title = _normalize_text(
+        pauta.get("NOMBRE_PAUTA") or pauta.get("nombre_pauta") or pauta.get("titulo") or pauta.get("name") or ""
+    )
+    pauta_msg = _normalize_text(pauta.get("MENSAJE") or pauta.get("mensaje") or pauta.get("descripcion") or pauta.get("message") or "")
+    pauta_img = (pauta.get("IMAGEN_PAUTA") or pauta.get("imagen_pauta") or pauta.get("imagen") or "")
+
+    fb_title = _normalize_text(fb.get("titulo") or fb.get("title") or "")
+    fb_msg = _normalize_text(fb.get("descripcion") or fb.get("mensaje") or fb.get("resumen_para_bot") or "")
+    fb_products = [p.lower() for p in (fb.get("productos_mencionados") or []) if p]
+    fb_line = _normalize_text(fb.get("nombre_linea") or "")
+    fb_img = fb.get("imagen") or ""
+
+    score = 0.0
+    # Productos en común (fuerte indicio)
+    for prod in fb_products:
+        if prod and (prod in pauta_msg or prod in pauta_title):
+            score += 3.0
+
+    # Línea coincidente
+    if fb_line and (fb_line in pauta_msg or fb_line in pauta_title):
+        score += 2.0
+
+    # Similitud de título y mensaje (fuzzy)
+    if fb_title and pauta_title:
+        score += SequenceMatcher(None, fb_title, pauta_title).ratio()
+    if fb_msg and pauta_msg:
+        score += SequenceMatcher(None, fb_msg, pauta_msg).ratio()
+
+    # Comparación simple de nombre de archivo de imagen (si existe)
+    try:
+        if fb_img and pauta_img and fb_img.split("/")[-1] == pauta_img.split("/")[-1]:
+            score += 1.5
+    except Exception:
+        pass
+
+    return float(score)
 
 
 # ── Procesamiento y envío (llamado tras el debounce) ─────────────────────────
@@ -131,6 +214,52 @@ async def _procesar_y_enviar(data: dict) -> None:
         paso_flujo = f"PASO4-recomendacion (turnos_bot={_turnos_bot})"
     await bot_log(instancia, "info", "vitta4",
         f"tipo_intencion={tipo_intencion!r} historial={'sí' if historial_texto else 'no'} flujo={flujo} paso={paso_flujo}")
+
+    # ── Antes de generar la respuesta: comprobar si la publicación viene de una pauta activa
+    try:
+        if (clasificacion.get("pub_facebook") or tipo_contenido == "publicacion_facebook"):
+            pautas = await _buscar_pautas_activas()
+            if pautas:
+                fb_info = {
+                    "titulo": titulo_fb,
+                    "descripcion": descripcion_fb,
+                    "productos_mencionados": (procesado.get("analisis") or {}).get("productos_mencionados") or (procesado.get("analisis") or {}).get("items") or [],
+                    "nombre_linea": (procesado.get("analisis") or {}).get("nombre_linea") or "",
+                    "imagen": thumbnail_url or url_media,
+                }
+                best = None
+                best_score = 0.0
+                for p in pautas:
+                    try:
+                        s = _score_pauta_match(p, fb_info)
+                    except Exception:
+                        s = 0.0
+                    if s > best_score:
+                        best_score = s
+                        best = p
+
+                # Umbral: si hay coincidencia razonable, usar el mensaje de la pauta
+                if best and best_score >= 1.5:
+                    matched_msg = best.get("MENSAJE") or best.get("mensaje") or best.get("message") or ""
+                    if matched_msg:
+                        texto_para_bot = matched_msg
+                        procesado["texto_procesado"] = matched_msg
+                        procesado.setdefault("analisis", {})["pauta_detectada"] = best
+                        # Forzar intención si la pauta ya indica tipo
+                        tipo_pauta = str(best.get("TIPO") or best.get("tipo") or "").lower()
+                        if "negocio" in tipo_pauta or "afili" in tipo_pauta:
+                            intencion = {"intencion": "negocio", "confianza": 0.95, "productos_mencionados": []}
+                        elif "product" in tipo_pauta or "producto" in tipo_pauta:
+                            intencion = {"intencion": "productos", "confianza": 0.95, "productos_mencionados": []}
+                        else:
+                            alt_int = await analizar_intencion(matched_msg) if matched_msg else None
+                            if alt_int:
+                                intencion = alt_int
+                        await bot_log(instancia, "info", "Pautas", f"pauta_detectada titulo={best.get('NOMBRE_PAUTA') or best.get('nombre_pauta')} score={best_score}")
+                else:
+                    await bot_log(instancia, "info", "Pautas", f"no_match_con_pautas count={len(pautas)} best_score={best_score}")
+    except Exception as e:
+        await bot_log(instancia, "error", "Pautas", f"Error checando pautas: {e}")
 
     respuesta: str | None = None
     if not es_flujo_negocio_puro:
