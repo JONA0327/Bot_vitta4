@@ -232,7 +232,13 @@ async def _crm_get(module: str, params: dict | None = None) -> list | dict | Non
         async with httpx.AsyncClient(timeout=CRM_TIMEOUT) as client:
             resp = await client.get(url, headers={"X-API-Key": CRM_API_TOKEN}, params=params or {})
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            try:
+                count = len(data) if isinstance(data, list) else (len(data.keys()) if isinstance(data, dict) else 'n/a')
+            except Exception:
+                count = 'n/a'
+            print(f"[CRM] GET {module} params={params} status={resp.status_code} items={count}")
+            return data
     except Exception as e:
         print(f"[CRM] error GET {module}: {e}")
         return None
@@ -337,14 +343,17 @@ async def _buscar_en_catalogos(historial_texto: str, analisis: dict, intencion: 
             partes.append(usuarios[-1])
 
     query = " ".join(p for p in partes if p)[:800]
+    print(f"[CRMCAT] buscar_en_catalogos query={query!r} partes={len(partes)} analisis_keys={list(analisis.keys())} intencion_products={intencion.get('productos_mencionados')}")
 
     # 1) Buscar testimonios
     try:
         if query:
             tests = await _buscar_testimonios_por_condicion(query)
+            print(f"[CRMCAT] _buscar_testimonios_por_condicion -> {len(tests) if tests else 0}")
         else:
             tests = []
-    except Exception:
+    except Exception as e:
+        print(f"[CRMCAT] error buscando testimonios: {e}")
         tests = []
 
     # Elegir primer testimonio relevante
@@ -388,6 +397,7 @@ async def _buscar_en_catalogos(historial_texto: str, analisis: dict, intencion: 
     # 2) Si no hay productos por testimonios → buscar paquetes por query
     if not product_records:
         paquetes = await _buscar_paquetes_por_query(query)
+        print(f"[CRMCAT] _buscar_paquetes_por_query -> {len(paquetes) if paquetes else 0}")
         if paquetes:
             # elegir el paquete más relevante (primer elemento)
             paquete = paquetes[0]
@@ -400,6 +410,7 @@ async def _buscar_en_catalogos(historial_texto: str, analisis: dict, intencion: 
     # 3) Si aún no hay productos → buscar directamente en productos
     if not product_records:
         productos = await _buscar_productos_por_query(query, per_page=12)
+        print(f"[CRMCAT] _buscar_productos_por_query -> {len(productos) if productos else 0}")
         if productos:
             product_records.extend(productos)
 

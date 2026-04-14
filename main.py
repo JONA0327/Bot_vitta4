@@ -283,7 +283,7 @@ async def _procesar_y_enviar(data: dict) -> None:
         respuesta = RESPUESTA_PRUEBA
         await bot_log(instancia, "warning", "vitta4", f"usando respuesta genérica tel={telefono}")
 
-    # Detectar si PASO 3 terminó (GPT incluyó [[LISTO]])
+    # Detectar si PASO 3 terminó (GPT incluyó [[LISTO]] )
     paso3_listo = PASO3_SIGNAL in respuesta
     if paso3_listo:
         respuesta = respuesta.replace(PASO3_SIGNAL, "").strip()
@@ -329,7 +329,33 @@ async def _procesar_y_enviar(data: dict) -> None:
     await _enviar(respuesta, procesado.get("etiqueta", mensaje[:120]), medios=medios)
 
     if paso3_listo:
-        await _enviar("Estoy examinando tu situación para brindarte la mejor información 🔍")
+        # Enviar mensaje de transición
+        transition_text = "Estoy examinando tu situación para brindarte la mejor información 🔍"
+        await _enviar(transition_text)
+        # Intentar avanzar inmediatamente a PASO4: llamar de nuevo a responder_productos
+        try:
+            temp_hist = historial_texto + ("\nBot: " + transition_text if historial_texto else "Bot: " + transition_text)
+            resultado2 = None
+            if not es_flujo_negocio_puro:
+                resultado2 = await responder_productos(
+                    texto_usuario=texto_para_bot,
+                    historial_texto=temp_hist,
+                    analisis=procesado.get("analisis") or {},
+                    intencion=intencion,
+                    instancia=instancia,
+                )
+            respuesta2 = None
+            medios2 = None
+            if isinstance(resultado2, dict):
+                respuesta2 = resultado2.get("texto")
+                medios2 = resultado2.get("medios")
+            else:
+                respuesta2 = resultado2
+            if respuesta2:
+                await bot_log(instancia, "info", "Bot", f"respuesta PASO4 generada ({len(respuesta2)} chars) tel={telefono}")
+                await _enviar(respuesta2, procesado.get("etiqueta", mensaje[:120]), medios=medios2)
+        except Exception as e:
+            await bot_log(instancia, "error", "Bot", f"Error generando PASO4 inmediatamente: {e}")
 
 
 async def _ejecutar_debounce(clave: str) -> None:
