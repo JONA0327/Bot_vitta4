@@ -54,12 +54,15 @@ async def obtener_historial(telefono: str, alternativas: list[str] | None = None
                 )
                 resp.raise_for_status()
                 rows = resp.json().get("data", [])
-        except Exception:
+        except Exception as e:
+            print(f"[Historial] ERROR candidato={candidato!r} url={url} error={e}")
             continue
 
         if not isinstance(rows, list) or not rows:
+            print(f"[Historial] sin resultados para candidato={candidato!r}")
             continue
 
+        print(f"[Historial] encontrado {len(rows)} registros para candidato={candidato!r}")
         # Encontrado — ordenar cronológicamente y retornar
         rows_sorted = sorted(rows, key=lambda r: r.get("created_at", ""))
         return [
@@ -72,6 +75,7 @@ async def obtener_historial(telefono: str, alternativas: list[str] | None = None
             if r.get("user_message")
         ]
 
+    print(f"[Historial] ningún candidato retornó resultados: {candidatos}")
     return []
 
 
