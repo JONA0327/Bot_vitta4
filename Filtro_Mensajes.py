@@ -351,35 +351,43 @@ async def analizar_publicacion_facebook(
     )
     user_content.append({"type": "text", "text": texto_contexto})
 
-    try:
-        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
-            resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "gpt-4o",
-                    "temperature": 0,
-                    "max_tokens": 700,
-                    "messages": [
-                        {"role": "system", "content": _FACEBOOK_SYSTEM},
-                        {"role": "user", "content": user_content},
-                    ],
-                },
-            )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
-    except Exception:
+    async def _llamar_openai(contenido: list) -> dict | None:
+        try:
+            async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
+                resp = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "gpt-4o",
+                        "temperature": 0,
+                        "max_tokens": 700,
+                        "messages": [
+                            {"role": "system", "content": _FACEBOOK_SYSTEM},
+                            {"role": "user", "content": contenido},
+                        ],
+                    },
+                )
+                resp.raise_for_status()
+                raw = resp.json()["choices"][0]["message"]["content"].strip()
+                print(f"[FB·analisis] raw={raw[:200]!r}")
+                m = re.search(r"\{.*\}", raw, re.DOTALL)
+                if m:
+                    return json.loads(m.group(0))
+        except Exception as e:
+            print(f"[FB·analisis] error={e}")
         return None
-    try:
-        m = re.search(r"\{.*\}", content, re.DOTALL)
-        if m:
-            return json.loads(m.group(0))
-    except Exception:
-        pass
-    return None
+
+    # Intento 1: con imagen
+    resultado = await _llamar_openai(user_content)
+    # Intento 2: si falló y había imagen, reintentar sin ella (URL inaccesible)
+    if resultado is None and url_imagen:
+        print("[FB·analisis] reintentando sin imagen")
+        solo_texto = [c for c in user_content if c.get("type") == "text"]
+        resultado = await _llamar_openai(solo_texto)
+    return resultado
 
 
 # ─── Analizador de INTENCIÓN ──────────────────────────────────────────────────

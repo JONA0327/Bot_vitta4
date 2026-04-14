@@ -145,8 +145,12 @@ async def vitta4(request: Request) -> dict[str, Any]:
     intencion = procesado.get("intencion") or {}
     tipo_intencion = (intencion.get("intencion") or "").lower()
 
-    if tipo_intencion in ("productos", "mixto"):
-        print(f"[vitta4] flujo=productos — tel={telefono}")
+    # Si hay conversación activa (historial), siempre continúa el flujo de productos
+    # sin importar la intención del mensaje actual (puede ser una objeción, pregunta, etc.)
+    flujo_productos = tipo_intencion in ("productos", "mixto") or bool(historial_texto.strip())
+
+    if flujo_productos:
+        print(f"[vitta4] flujo=productos tipo_intencion={tipo_intencion!r} historial={'sí' if historial_texto else 'no'} — tel={telefono}")
         respuesta = await responder_productos(
             texto_usuario=texto_para_bot,
             historial_texto=historial_texto,
