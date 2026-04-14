@@ -242,9 +242,9 @@ async def _procesar_y_enviar(data: dict) -> None:
                 if best and best_score >= 1.5:
                     matched_msg = best.get("MENSAJE") or best.get("mensaje") or best.get("message") or ""
                     if matched_msg:
-                        texto_para_bot = matched_msg
-                        procesado["texto_procesado"] = matched_msg
+                        # No sobrescribir el texto original del usuario; guardar la pauta detectada
                         procesado.setdefault("analisis", {})["pauta_detectada"] = best
+                        procesado.setdefault("analisis", {})["mensaje_pauta"] = matched_msg
                         # Forzar intención si la pauta ya indica tipo
                         tipo_pauta = str(best.get("TIPO") or best.get("tipo") or "").lower()
                         if "negocio" in tipo_pauta or "afili" in tipo_pauta:

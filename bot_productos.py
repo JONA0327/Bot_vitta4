@@ -434,10 +434,11 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
         productos_fb
         or analisis.get("resumen_para_bot")
         or analisis.get("descripcion_publicacion")
+        or analisis.get("mensaje_pauta")
     )
 
     if tiene_fb:
-        resumen_fb = analisis.get("resumen_para_bot") or analisis.get("descripcion_publicacion") or ""
+        resumen_fb = analisis.get("resumen_para_bot") or analisis.get("descripcion_publicacion") or analisis.get("mensaje_pauta") or ""
         contexto_usuario = analisis.get("contexto_usuario") or ""
         nombre_linea = analisis.get("nombre_linea") or ""
         # Usar el resumen/contexto para transmitir el TEMA DE SALUD, no el nombre técnico de línea/producto
