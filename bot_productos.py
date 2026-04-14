@@ -163,22 +163,21 @@ Haz las preguntas necesarias para entender:
   2. ¿Cuánto tiempo lleva con ese problema?
   3. ¿Qué lo causa o qué lo desencadena?
   4. ¿Cuánto le afecta en su vida diaria (escala 1-10 o descripción)?
-  5. ¿Cómo se siente actualmente al respecto?
-  6. ¿Ha probado algo antes? ¿Con qué resultado?
+  5. ¿Ha probado algo antes? ¿Con qué resultado?
 
-REGLAS:
-- Haz SIEMPRE solo UNA pregunta por mensaje. Natural, cálida, como una amiga.
-- MÁXIMO 2 líneas por respuesta. Un emoji como mucho.
+REGLAS ESTRICTAS:
+- Haz SIEMPRE solo UNA pregunta por mensaje. Corta, directa y cálida.
+- MÁXIMO 2 líneas por respuesta. SIN emojis — el tono cálido lo transmites con las palabras.
 - NO recomiendes productos todavía.
 - NO menciones precios, marcas ni 4Life.
-- Usa el historial para no repetir preguntas ya respondidas.
+- REVISA el historial antes de preguntar; JAMÁS repitas una pregunta que ya fue respondida.
+- PREGUNTAS RESTANTES: {preguntas_restantes}. Cuando llegues a 0 debes usar [[LISTO]] obligatoriamente.
 
-CUANDO TENGAS TODA LA INFORMACIÓN NECESARIA:
-- Cuando hayas entendido problema, causas, duración e impacto,  
-  inicia tu respuesta con la línea exacta: [[LISTO]]
-- Después escribe un mensaje corto de cierre empático, ej:
-  "Gracias, con lo que me has contado ya tengo todo lo que necesito 😊"
-- [[LISTO]] ÚNICAMENTE cuando tengas suficiente info para hacer una recomendación precisa.
+CUANDO TENGAS SUFICIENTE INFORMACIÓN (problema, duración, causas, impacto):
+- Inicia tu respuesta con la línea exacta: [[LISTO]]
+- Luego escribe un mensaje corto empático de cierre, sin emojis, ej:
+  "Perfecto, con lo que me has contado ya tengo todo lo que necesito."
+- Usa [[LISTO]] también cuando se agoten las preguntas restantes, aunque no tengas todo.
 """
 
 # Señal que el bot incluye cuando PASO 3 está completo
@@ -395,14 +394,16 @@ async def _responder_paso3(
     historial_texto: str,
     analisis: dict,
     intencion: dict,
+    preguntas_restantes: int = 5,
 ) -> str | None:
     """PASO 3 — Diagnóstico profundo: entender el problema antes de recomendar."""
     contexto_extra = ""
     if analisis.get("resumen_para_bot"):
         contexto_extra = f"\nContexto de llegada del usuario: {analisis['resumen_para_bot']}"
 
+    system_prompt = _PASO3_SYSTEM.format(preguntas_restantes=preguntas_restantes)
     messages = [
-        {"role": "system", "content": _PASO3_SYSTEM + contexto_extra},
+        {"role": "system", "content": system_prompt + contexto_extra},
         {
             "role": "system",
             "content": f"HISTORIAL:\n{historial_texto}",
@@ -466,9 +467,15 @@ async def responder_productos(
 
     # ── PASO 3: Diagnóstico profundo (hasta que el bot tenga suficiente info) ─
     # Se detecta el fin de PASO 3 por la presencia del marcador en historial
+    # o cuando se alcanza el límite duro de 5 preguntas
     _MARKER_PASO3_DONE = "Estoy examinando tu situación"
-    if _MARKER_PASO3_DONE not in historial_texto:
-        return await _responder_paso3(texto_usuario, historial_texto, analisis, intencion)
+    preguntas_paso3 = max(0, _contar_turnos_bot(historial_texto) - 2)
+    preguntas_restantes = max(0, 5 - preguntas_paso3)
+    if _MARKER_PASO3_DONE not in historial_texto and preguntas_paso3 < 5:
+        return await _responder_paso3(
+            texto_usuario, historial_texto, analisis, intencion,
+            preguntas_restantes=preguntas_restantes,
+        )
 
     # ── PASO 4: Recomendación de productos (PASO 3 ya completado) ─────────────
     contexto_partes: list[str] = []
