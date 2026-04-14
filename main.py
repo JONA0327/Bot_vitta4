@@ -107,6 +107,7 @@ async def vitta4(request: Request) -> dict[str, Any]:
         url_publicidad=thumbnail_url,
         telefono=telefono,
         remote_jid=_remote_jid or telefono,
+        historial_texto=historial_texto,
     )
     print(f"[vitta4] filtro={clasificacion}")
 
