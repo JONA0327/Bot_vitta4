@@ -208,7 +208,6 @@ def _saludo_hora_mexico() -> str:
 
 
 def _extraer_productos_contexto(analisis: dict, intencion: dict) -> list[str]:
-def _extraer_productos_contexto(analisis: dict, intencion: dict) -> list[str]:
     """Extrae lista de productos detectados de FB/imagen del análisis.
 
     Prioridad: analisis['productos_mencionados'] (visión directa) > intencion > items > producto_mencionado.
