@@ -120,7 +120,7 @@ Ejemplo de formato correcto (2 líneas máximo):
 
 SI el usuario llegó desde una publicación FB y se te proveen PRODUCTOS DETECTADOS:
 - Menciona 1 o 2 de esos productos por nombre de forma natural (ej. "vi que te interesó el PreBiotics y el Aloe Vera Stix").
-- Si se te indica la CATEGORÍA, puedes mencionarla de forma natural (ej. "de salud digestiva").
+- NO menciones la categoría ni la línea por separado — los nombres de los productos ya comunican todo.
 - Cierra pidiendo el nombre. Total: máximo 2 líneas.
 
 SI el usuario llegó desde una publicación FB pero NO hay productos específicos:
@@ -208,15 +208,42 @@ def _saludo_hora_mexico() -> str:
 
 
 def _extraer_productos_contexto(analisis: dict, intencion: dict) -> list[str]:
-    """Extrae lista de productos detectados de FB/imagen del análisis."""
-    productos: list[str] = list(intencion.get("productos_mencionados") or [])
-    if isinstance(analisis.get("items"), list):
-        for item in analisis["items"]:
-            if item and item not in productos:
-                productos.append(item)
-    producto_principal = analisis.get("producto_mencionado") or ""
-    if producto_principal and producto_principal not in productos:
-        productos.insert(0, producto_principal)
+def _extraer_productos_contexto(analisis: dict, intencion: dict) -> list[str]:
+    """Extrae lista de productos detectados de FB/imagen del análisis.
+
+    Prioridad: analisis['productos_mencionados'] (visión directa) > intencion > items > producto_mencionado.
+    Cuando la visión ya provee productos, NO se mezcla con los de intención para evitar duplicados
+    con variantes parciales del mismo nombre (ej: 'Digest' + 'Digestive' → solo 'Digestive').
+    """
+    # 1. Productos detectados directamente desde la imagen/FB (fuente primaria)
+    productos_vision: list[str] = [p for p in (analisis.get("productos_mencionados") or []) if p]
+
+    if productos_vision:
+        productos = productos_vision
+    else:
+        # 2. Fallback: intención (texto) + items de imagen estática + producto_mencionado
+        productos = [p for p in (intencion.get("productos_mencionados") or []) if p]
+        if isinstance(analisis.get("items"), list):
+            for item in analisis["items"]:
+                if item and item not in productos:
+                    productos.append(item)
+        producto_principal = analisis.get("producto_mencionado") or ""
+        if producto_principal and producto_principal not in productos:
+            productos.insert(0, producto_principal)
+
+    # 3. Deduplicar: eliminar términos que sean substring de otro en la lista
+    #    Ej: ["Digest", "Digestive", "Digestive 4Life"] → ["Digestive 4Life"]
+    if len(productos) > 1:
+        prods_lower = [p.lower() for p in productos]
+        filtrado = [
+            prod for i, prod in enumerate(productos)
+            if not any(
+                i != j and prods_lower[i] in prods_lower[j]
+                for j in range(len(productos))
+            )
+        ]
+        productos = filtrado if filtrado else productos
+
     return productos
 
 
@@ -571,16 +598,14 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
         nombre_linea = analisis.get("nombre_linea") or ""
 
         if productos_fb:
-            # Detectar categoría/línea de los productos para dar más contexto al LLM
-            linea_detectada = _detectar_linea_productos(productos_fb) or nombre_linea or ""
             lista_productos = ", ".join(productos_fb[:3])
             prompt_usuario = (
                 f"Hora del día: {saludo}.\n"
                 f"Tu nombre (preséntate con este nombre): {nombre_bot}.\n"
                 f"PRODUCTOS DETECTADOS de la publicación: {lista_productos}\n"
-                + (f"Categoría / línea 4Life de esos productos: {linea_detectada}\n" if linea_detectada else "")
-                + "Escribe el saludo siguiendo las instrucciones para 'publicación FB con PRODUCTOS DETECTADOS'. "
+                "Escribe el saludo siguiendo las instrucciones para 'publicación FB con PRODUCTOS DETECTADOS'. "
                 "Menciona 1 o 2 de los productos por nombre de forma natural. "
+                "NO menciones la categoría ni la línea por separado. "
                 "NO menciones '4Life' como marca aislada ni 'generar ingresos'. "
                 "Un solo emoji al final si encaja."
             )

@@ -373,16 +373,21 @@ async def analizar_publicacion_facebook(
         else:
             print("[FB·imagen] no se pudo descargar, se usará solo texto")
 
-    texto_contexto = (
+    texto_contexto_base = (
         f"Mensaje del usuario: {mensaje}\n"
         f"Título de la publicación: {titulo}\n"
         f"Descripción: {descripcion}"
     )
+    # Cuando la imagen está disponible, los productos deben detectarse SOLO desde ella.
+    # Se omite el título/descripción del contexto para evitar que el LLM infiera productos
+    # a partir del texto en lugar de leerlos visualmente.
+    texto_contexto_imagen = f"Mensaje del usuario: {mensaje}" if imagen_content else texto_contexto_base
+
     user_content_con_img: list = []
     if imagen_content:
         user_content_con_img.append(imagen_content)
-    user_content_con_img.append({"type": "text", "text": texto_contexto})
-    user_content_sin_img: list = [{"type": "text", "text": texto_contexto}]
+    user_content_con_img.append({"type": "text", "text": texto_contexto_imagen})
+    user_content_sin_img: list = [{"type": "text", "text": texto_contexto_base}]
 
     async def _llamar_openai(contenido: list) -> dict | None:
         try:
