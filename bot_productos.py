@@ -429,28 +429,40 @@ def _extract_ids_from_field(value: Any) -> list:
     return ids
 
 
-async def _buscar_en_catalogos(historial_texto: str, analisis: dict, intencion: dict, texto_usuario: str) -> list:
+async def _buscar_en_catalogos(
+    historial_texto: str,
+    analisis: dict,
+    intencion: dict,
+    texto_usuario: str,
+    terminos_busqueda: str = "",
+) -> list:
     """Busca productos en testimonios → paquetes → productos según la lógica indicada.
     Devuelve lista de registros de producto (posiblemente vacía).
-    """
-    # Construir query base usando lo que tengamos del análisis / intención / historial
-    partes = []
-    if intencion.get("resumen"):
-        partes.append(intencion.get("resumen"))
-    if analisis.get("resumen_para_bot"):
-        partes.append(analisis.get("resumen_para_bot"))
-    if analisis.get("contexto_usuario"):
-        partes.append(analisis.get("contexto_usuario"))
 
-    # Usar TODOS los mensajes de usuario del historial (no solo el último).
-    # El primer mensaje frecuentemente contiene el [CONTEXTO_ANUNCIO] con el nombre del producto
-    # y los últimos mensajes contienen el problema/síntomas del usuario.
-    if historial_texto:
-        usuarios = re.findall(r"Usuario:\s*(.+)", historial_texto)
-        if usuarios:
-            partes.append(usuarios[-1])          # último mensaje: describe síntomas/problema
-            if len(usuarios) > 1:
-                partes.append(usuarios[0])       # primer mensaje: contiene contexto del anuncio/producto
+    Si se provee `terminos_busqueda` (resultado del análisis PASO4), se usa como
+    query principal en lugar del texto crudo del historial.
+    """
+    # ── Query base ──────────────────────────────────────────────────────────
+    if terminos_busqueda:
+        # Usar los términos limpios extraídos por LLM en PASO4 (prioritario)
+        partes = [terminos_busqueda]
+    else:
+        # Fallback: construir desde análisis / intención / historial (comportamiento anterior)
+        partes = []
+        if intencion.get("resumen"):
+            partes.append(intencion.get("resumen"))
+        if analisis.get("resumen_para_bot"):
+            partes.append(analisis.get("resumen_para_bot"))
+        if analisis.get("contexto_usuario"):
+            partes.append(analisis.get("contexto_usuario"))
+
+        # Usar mensajes del historial solo cuando no hay términos limpios de análisis
+        if historial_texto:
+            usuarios = re.findall(r"Usuario:\s*(.+)", historial_texto)
+            if usuarios:
+                partes.append(usuarios[-1])          # último mensaje: describe síntomas/problema
+                if len(usuarios) > 1:
+                    partes.append(usuarios[0])       # primer mensaje: contiene contexto del anuncio/producto
 
     # Extraer nombres de productos del historial cuando intencion/analisis no los proveen.
     # Ej: "[PreBiotics, Aloe Vera Stix, Tea4Life]" o el título del anuncio de Facebook.
@@ -822,6 +834,57 @@ def _contar_turnos_bot(historial_texto: str) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 # Función principal
 # ─────────────────────────────────────────────────────────────────────────────
+async def _analizar_entrevista_paso4(historial_texto: str) -> dict:
+    """Analiza el historial de PASO 3 con LLM y extrae síntomas, condición y términos de búsqueda.
+
+    Retorna dict con:
+      condicion_principal  : str  — ej. "problemas digestivos"
+      sintomas             : list — ej. ["gases", "agruras", "acidez"]
+      causas_posibles      : list — ej. ["estrés", "alimentación inadecuada"]
+      terminos_busqueda    : str  — 2-5 palabras clave cortas para el catálogo
+    """
+    if not OPENAI_API_KEY or not historial_texto:
+        return {}
+
+    prompt = (
+        "Analiza la siguiente conversación de entrevista de salud. "
+        "Extrae de forma estructurada los síntomas, la condición principal y términos clave para buscar suplementos.\n\n"
+        f"CONVERSACIÓN:\n{historial_texto}\n\n"
+        "Responde ÚNICAMENTE con JSON válido (sin bloque de código markdown) con esta estructura exacta:\n"
+        '{"condicion_principal":"nombre corto de la condición",'
+        '"sintomas":["síntoma1","síntoma2"],'
+        '"causas_posibles":["causa1","causa2"],'
+        '"terminos_busqueda":"2-5 palabras clave cortas para buscar en catálogo de suplementos"}'
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0.2,
+                    "max_tokens": 300,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"].strip()
+            # Eliminar bloque markdown si el modelo lo incluyó
+            if content.startswith("```"):
+                content = re.sub(r"```(?:json)?\n?", "", content).strip().rstrip("`").strip()
+            result = json.loads(content)
+            print(f"[PASO4] analisis_entrevista={result!r}")
+            return result
+    except Exception as e:
+        print(f"[PASO4] Error en _analizar_entrevista_paso4: {e}")
+        return {}
+
+
 async def responder_productos(
     texto_usuario: str,
     historial_texto: str = "",
@@ -896,6 +959,18 @@ async def responder_productos(
         )
 
     # ── PASO 4: Recomendación de productos (PASO 3 ya completado) ─────────────
+    # Paso 4a — Analizar la entrevista PASO3 para extraer síntomas/condición/términos de búsqueda
+    analisis_entrevista: dict = {}
+    try:
+        analisis_entrevista = await _analizar_entrevista_paso4(historial_texto)
+    except Exception as e:
+        print(f"[PASO4] Error llamando _analizar_entrevista_paso4: {e}")
+
+    # Términos limpios para el catálogo (producto del análisis LLM)
+    terminos_catalogo = analisis_entrevista.get("terminos_busqueda", "")
+    condicion_detectada = analisis_entrevista.get("condicion_principal", "")
+    sintomas_detectados: list[str] = analisis_entrevista.get("sintomas") or []
+
     contexto_partes: list[str] = []
 
     # Productos detectados en imagen/publicación
@@ -904,6 +979,12 @@ async def responder_productos(
         productos_mencionados = list({*productos_mencionados, *analisis["items"]})
     if productos_mencionados:
         contexto_partes.append(f"Productos detectados en el contexto: {', '.join(productos_mencionados)}")
+
+    # Condición y síntomas detectados en la entrevista
+    if condicion_detectada:
+        contexto_partes.append(f"Condición detectada en entrevista: {condicion_detectada}")
+    if sintomas_detectados:
+        contexto_partes.append(f"Síntomas: {', '.join(sintomas_detectados)}")
 
     # Descripción de imagen si viene de análisis visual
     if analisis.get("descripcion"):
@@ -919,15 +1000,20 @@ async def responder_productos(
 
     contexto_str = "\n".join(contexto_partes)
 
-    # ── Buscar en catálogos (testimonios → paquetes → productos)
+    # ── Buscar en catálogos usando los términos limpios del análisis ──────────
     try:
-        productos_catalogo = await _buscar_en_catalogos(historial_texto, analisis, intencion, texto_usuario)
+        productos_catalogo = await _buscar_en_catalogos(
+            historial_texto, analisis, intencion, texto_usuario,
+            terminos_busqueda=terminos_catalogo,
+        )
     except Exception:
         productos_catalogo = []
 
     if productos_catalogo:
-        # Construir prompt con los productos encontrados + condición del usuario
-        condicion = intencion.get("resumen") or analisis.get("contexto_usuario") or ""
+        # Condición para el prompt: priorizar la extraída por análisis LLM
+        condicion = condicion_detectada or intencion.get("resumen") or analisis.get("contexto_usuario") or ""
+        if sintomas_detectados:
+            condicion = f"{condicion} (síntomas: {', '.join(sintomas_detectados)})" if condicion else f"Síntomas: {', '.join(sintomas_detectados)}"
         partes_prod = []
         for p in productos_catalogo[:6]:
             nombre = _pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or p.get("nombre") or ""
