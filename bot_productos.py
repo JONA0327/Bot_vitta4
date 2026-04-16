@@ -698,7 +698,6 @@ def _construir_pregunta_indagacion(analisis: dict, intencion: dict, historial_te
                 "Pregunta de forma natural qué quiere MEJORAR o FORTALECER en relación a ese tema de salud. "
                 "NO menciones nombres de productos específicos ni 'generar ingresos'."
             )
-        )
     else:
         return (
             "No hay productos específicos detectados. "
