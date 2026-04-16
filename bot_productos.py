@@ -118,8 +118,13 @@ Ejemplo de formato correcto (2 líneas máximo):
 "¡Buenas tardes! Soy Valeria, me alegra que estés aquí 😊
 ¿Con quién tengo el gusto?"
 
-SI el usuario llegó desde una publicación (se te indicará CONTEXTO):
-- Reconoce su interés en el TEMA DE SALUD en UNA sola frase natural, NO menciones nombres de productos ni de líneas.
+SI el usuario llegó desde una publicación FB y se te proveen PRODUCTOS DETECTADOS:
+- Menciona 1 o 2 de esos productos por nombre de forma natural (ej. "vi que te interesó el PreBiotics y el Aloe Vera Stix").
+- Si se te indica la CATEGORÍA, puedes mencionarla de forma natural (ej. "de salud digestiva").
+- Cierra pidiendo el nombre. Total: máximo 2 líneas.
+
+SI el usuario llegó desde una publicación FB pero NO hay productos específicos:
+- Reconoce su interés en el TEMA DE SALUD en UNA sola frase natural, sin mencionar nombres de productos.
 - Pide su nombre al final. Total: máximo 2 líneas.
 """
 
@@ -213,6 +218,71 @@ def _extraer_productos_contexto(analisis: dict, intencion: dict) -> list[str]:
     if producto_principal and producto_principal not in productos:
         productos.insert(0, producto_principal)
     return productos
+
+
+# ── Diccionario de productos 4Life → categoría/línea
+_LINEAS_4LIFE: dict[str, str] = {
+    # Digestive / Gut Health
+    "prebiotics":          "salud digestiva",
+    "pre-biotics":         "salud digestiva",
+    "aloe vera stix":      "salud digestiva",
+    "aloe vera":           "salud digestiva",
+    "digestive 4life":     "salud digestiva",
+    "digest 4life":        "salud digestiva",
+    "pro-tf":              "salud digestiva",
+    "probiotic":           "salud digestiva",
+    # Energy / Weight
+    "tea4life":            "energía y control de peso",
+    "tea 4life":           "energía y control de peso",
+    "4life burn":          "quema de grasa y energía",
+    "burn":                "quema de grasa y energía",
+    "fit4life":            "control de peso",
+    "shape":               "control de peso",
+    # Immune Support
+    "transfer factor":     "apoyo inmunológico",
+    "transferfactor":      "apoyo inmunológico",
+    "transfer factor plus":"apoyo inmunológico",
+    "nanofactor":          "apoyo inmunológico",
+    # Antioxidants / Vitality
+    "riovida":             "vitalidad e inmunidad",
+    "rio vida":            "vitalidad e inmunidad",
+    "riovida stix":        "vitalidad e inmunidad",
+    "riolife":             "vitalidad y antioxidantes",
+    # Skin / Beauty
+    "collagen":            "cuidado de la piel",
+    "collagen plus":       "cuidado de la piel",
+    "skin care":           "cuidado de la piel",
+    # Cardiovascular
+    "cardio4life":         "salud cardiovascular",
+    # Hormonal / Wellness
+    "female balance":      "bienestar femenino",
+    "male factor":         "bienestar masculino",
+    # Bone / Joint
+    "joint support":       "salud articular",
+    "bone support":        "salud ósea",
+    # Brain
+    "brain support":       "salud cerebral",
+    "focus 4 life":        "salud cerebral y enfoque",
+}
+
+
+def _detectar_linea_productos(productos: list[str]) -> str:
+    """Retorna la categoría/línea de 4Life más probable para la lista de productos."""
+    if not productos:
+        return ""
+    encontradas: list[str] = []
+    for prod in productos:
+        clave = prod.lower().strip()
+        for k, v in _LINEAS_4LIFE.items():
+            if k in clave or clave in k:
+                if v not in encontradas:
+                    encontradas.append(v)
+                break
+    if not encontradas:
+        return ""
+    if len(set(encontradas)) == 1:
+        return encontradas[0]
+    return " y ".join(encontradas[:2])
 
 
 # ── Helpers CRM / catálogos
@@ -499,18 +569,31 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
         resumen_fb = analisis.get("resumen_para_bot") or analisis.get("descripcion_publicacion") or analisis.get("mensaje_pauta") or ""
         contexto_usuario = analisis.get("contexto_usuario") or ""
         nombre_linea = analisis.get("nombre_linea") or ""
-        # Usar el resumen/contexto para transmitir el TEMA DE SALUD, no el nombre técnico de línea/producto
-        tema_salud = contexto_usuario or resumen_fb or (f"la línea {nombre_linea}" if nombre_linea else "sus productos de salud")
-        prompt_usuario = (
-            f"Hora del día: {saludo}.\n"
-            f"Tu nombre (preséntate con este nombre): {nombre_bot}.\n"
-            f"CONTEXTO: El usuario llegó desde una pauta con este tema: {tema_salud}\n"
-            "MÁXIMO 2 líneas cortas. "
-            "Reconoce su interés en el tema de salud de forma natural y empática, sin mencionar nombres técnicos de líneas ni productos. "
-            "Ej: 'Vi que le interesó lo relacionado con la digestión/salud digestiva/bienestar...' "
-            "NO menciones '4Life' como marca ni 'generar ingresos'. "
-            "Cierra pidiendo el nombre respetuosamente. Un solo emoji al final."
-        )
+
+        if productos_fb:
+            # Detectar categoría/línea de los productos para dar más contexto al LLM
+            linea_detectada = _detectar_linea_productos(productos_fb) or nombre_linea or ""
+            lista_productos = ", ".join(productos_fb[:3])
+            prompt_usuario = (
+                f"Hora del día: {saludo}.\n"
+                f"Tu nombre (preséntate con este nombre): {nombre_bot}.\n"
+                f"PRODUCTOS DETECTADOS de la publicación: {lista_productos}\n"
+                + (f"Categoría / línea 4Life de esos productos: {linea_detectada}\n" if linea_detectada else "")
+                + "Escribe el saludo siguiendo las instrucciones para 'publicación FB con PRODUCTOS DETECTADOS'. "
+                "Menciona 1 o 2 de los productos por nombre de forma natural. "
+                "NO menciones '4Life' como marca aislada ni 'generar ingresos'. "
+                "Un solo emoji al final si encaja."
+            )
+        else:
+            tema_salud = contexto_usuario or resumen_fb or (f"la línea {nombre_linea}" if nombre_linea else "sus productos de salud")
+            prompt_usuario = (
+                f"Hora del día: {saludo}.\n"
+                f"Tu nombre (preséntate con este nombre): {nombre_bot}.\n"
+                f"CONTEXTO: El usuario llegó desde una publicación con este tema de salud: {tema_salud}\n"
+                "Escribe el saludo siguiendo las instrucciones para 'publicación FB sin productos específicos'. "
+                "Reconoce el interés en salud de forma natural, sin mencionar productos ni '4Life' como marca. "
+                "Un solo emoji al final si encaja."
+            )
     else:
         prompt_usuario = (
             f"Hora del día: {saludo}.\n"
@@ -596,14 +679,25 @@ def _construir_pregunta_indagacion(analisis: dict, intencion: dict, historial_te
     )
 
     if tiene_productos_fb:
-        lista = ", ".join(productos[:3]) if productos else "este producto"
-        contexto = lista if productos else (analisis.get("resumen_para_bot") or resumen_historial or "este producto")
-        return (
-            f"El cliente llegó interesado en: {contexto}. "
-            "Pregunta de forma natural qué quiere MEJORAR o FORTALECER en relación a esos productos "
-            "(ej. digestión, energía, inmunidad, peso, etc.). "
-            "NO ofrezcas la opción de 'generar ingresos' — el cliente está enfocado en productos. "
-            "Personaliza la pregunta mencionando el/los producto(s) de forma natural."
+        lista = ", ".join(productos[:3]) if productos else ""
+        contexto = lista if lista else (analisis.get("resumen_para_bot") or resumen_historial or "nuestra publicación")
+        # Detectar categoría/línea de los productos detectados para enriquecer la pregunta
+        linea_paso2 = _detectar_linea_productos(productos) if productos else (analisis.get("nombre_linea") or "")
+        linea_ctx = f" (línea de {linea_paso2})" if linea_paso2 else ""
+        if lista:
+            return (
+                f"El cliente llegó interesado en estos productos de 4Life: {lista}{linea_ctx}. "
+                "Pregunta de forma natural qué quiere MEJORAR o FORTALECER. "
+                "Menciona 1 o 2 de los productos por nombre dentro de la pregunta de forma conversacional "
+                "(ej. '¿Qué te gustaría mejorar con el PreBiotics y el Aloe Vera Stix?'). "
+                "NO ofrezcas la opción de 'generar ingresos' — el cliente está enfocado en productos."
+            )
+        else:
+            return (
+                f"El cliente llegó desde nuestra publicación sobre: {contexto}. "
+                "Pregunta de forma natural qué quiere MEJORAR o FORTALECER en relación a ese tema de salud. "
+                "NO menciones nombres de productos específicos ni 'generar ingresos'."
+            )
         )
     else:
         return (
