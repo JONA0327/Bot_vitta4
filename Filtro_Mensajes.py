@@ -574,3 +574,76 @@ async def procesar_contenido(
         "analisis": analisis,
         "intencion": intencion,
     }
+
+
+# ── Entrenamiento IA: análisis de conversaciones ──────────────────────────────
+
+_ENTRENAMIENTO_IA_SYSTEM = """\
+Eres un experto analista de conversaciones de ventas en WhatsApp.
+Recibirás el historial completo de una conversación entre un cliente y un agente humano (o bot).
+Tu tarea es analizar la calidad de la atención, detectar objeciones, técnicas usadas y generar recomendaciones.
+
+Devuelve ÚNICAMENTE JSON válido con esta estructura exacta (sin texto adicional):
+{
+  "calidad_general": "buena" | "regular" | "mala",
+  "puntaje": <float 1.0–10.0>,
+  "resumen": "<resumen breve de la conversación>",
+  "puntos_positivos": ["<punto>", ...],
+  "puntos_negativos": ["<punto>", ...],
+  "objeciones": [
+    {"objecion": "<texto>", "manejo": "<cómo se manejó>", "exitoso": true | false},
+    ...
+  ],
+  "tecnicas_exitosas": ["<técnica>", ...],
+  "tecnicas_fallidas": ["<técnica>", ...],
+  "productos_mencionados": ["<producto>", ...],
+  "recomendaciones": ["<recomendación>", ...]
+}
+
+Criterios de calidad:
+- "buena": atención empática, objeciones bien manejadas, cierre o avance hacia venta.
+- "regular": atención aceptable, algunas objeciones sin resolver, sin cierre claro.
+- "mala": cliente ignorado, respuestas fuera de contexto, abandono del cliente.
+"""
+
+
+async def analizar_conversacion_entrenamiento(pares: list[dict]) -> dict | None:
+    """
+    Analiza una lista de pares {pregunta, respuesta} con IA.
+    Retorna el JSON estructurado de metadatos o None si falla.
+    """
+    if not OPENAI_API_KEY or not pares:
+        return None
+
+    # Construir texto de conversación
+    lineas: list[str] = []
+    for p in pares:
+        if p.get("pregunta"):
+            lineas.append(f"Cliente: {p['pregunta']}")
+        if p.get("respuesta"):
+            lineas.append(f"Agente: {p['respuesta']}")
+    texto_conv = "\n".join(lineas)
+
+    payload = {
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "system", "content": _ENTRENAMIENTO_IA_SYSTEM},
+            {"role": "user",   "content": texto_conv},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 1200,
+        "response_format": {"type": "json_object"},
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                json=payload,
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+            return json.loads(content)
+    except Exception:
+        return None

@@ -18,6 +18,7 @@ from BotLogger import CRM_API_TOKEN, CRM_TENANT, CRM_URL, bot_log
 from bot_productos import responder_productos
 from Filtro_Mensajes import (
     _descargar_imagen_base64,
+    analizar_conversacion_entrenamiento,
     analizar_intencion,
     filtrar_y_clasificar,
     procesar_contenido,
@@ -531,3 +532,95 @@ async def vitta4(request: Request) -> dict[str, Any]:
     await bot_log(instancia, "info", "Debounce",
         f"en cola, procesará en {DEBOUNCE_SECS}s tel={telefono}")
     return {"debounced": True}
+
+
+# ── Entrenamiento IA ──────────────────────────────────────────────────────────
+
+@app.post("/entrenamiento-ia")
+async def entrenamiento_ia(request: Request) -> dict[str, Any]:
+    """Recibe lote de conversaciones del CRM, analiza con IA y retorna/callback resultados."""
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="El body debe ser JSON válido.") from exc
+
+    # Validar token entrante
+    if INCOMING_TOKEN:
+        request_token = body.get("api_token") or request.headers.get("X-API-Token")
+        if request_token != INCOMING_TOKEN:
+            raise HTTPException(status_code=401, detail="Token de acceso inválido.")
+
+    instancia     = body.get("instancia", "")
+    conversaciones = body.get("conversaciones", [])
+    callback_url  = body.get("callback_url", "")
+    api_key       = body.get("api_key", "")
+
+    if not conversaciones:
+        raise HTTPException(status_code=400, detail="No se recibieron conversaciones.")
+
+    await bot_log(instancia, "info", "EntrenamientoIA",
+                  f"Recibidas {len(conversaciones)} conversaciones para análisis.")
+
+    # Procesar en background para responder rápido
+    asyncio.create_task(
+        _procesar_entrenamiento_ia(instancia, conversaciones, callback_url, api_key)
+    )
+    return {"status": "procesando", "total": len(conversaciones)}
+
+
+async def _procesar_entrenamiento_ia(
+    instancia: str,
+    conversaciones: list[dict],
+    callback_url: str,
+    api_key: str,
+) -> None:
+    """Procesa cada conversación con IA y envía resultados al callback URL."""
+    resultados: list[dict] = []
+
+    for conv in conversaciones:
+        telefono  = conv.get("telefono", "")
+        ultimo_id = conv.get("ultimo_id", 0)
+        pares     = conv.get("pares", [])
+
+        try:
+            meta = await analizar_conversacion_entrenamiento(pares)
+            prompt_generado = ""
+            if meta and meta.get("recomendaciones"):
+                recs = "; ".join(meta["recomendaciones"][:5])
+                prompt_generado = (
+                    f"Cuando el cliente presente objeciones, recuerda: {recs}. "
+                    f"La calidad general fue {meta.get('calidad_general', 'regular')} "
+                    f"(puntaje {meta.get('puntaje', 0)}/10)."
+                )
+
+            resultados.append({
+                "telefono":       telefono,
+                "ultimo_id":      ultimo_id,
+                "metadatos":      meta or {},
+                "prompt_generado": prompt_generado,
+            })
+            await bot_log(instancia, "info", "EntrenamientoIA",
+                          f"Análisis OK tel={telefono} calidad={meta.get('calidad_general') if meta else 'N/A'}")
+        except Exception as exc:
+            await bot_log(instancia, "error", "EntrenamientoIA",
+                          f"Error analizando tel={telefono}: {exc}")
+            resultados.append({
+                "telefono":  telefono,
+                "ultimo_id": ultimo_id,
+                "error":     str(exc),
+            })
+
+    # Enviar resultados al callback del CRM
+    if callback_url and resultados:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                await client.post(
+                    callback_url,
+                    json={"resultados": resultados},
+                    headers={"X-API-Key": api_key} if api_key else {},
+                )
+            await bot_log(instancia, "info", "EntrenamientoIA",
+                          f"Resultados enviados a callback: {len(resultados)} conversaciones.")
+        except Exception as exc:
+            await bot_log(instancia, "error", "EntrenamientoIA",
+                          f"Error enviando callback: {exc}")
