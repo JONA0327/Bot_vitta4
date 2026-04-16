@@ -7,6 +7,11 @@ from difflib import SequenceMatcher
 
 import httpx
 from dotenv import load_dotenv
+
+# Cargar .env ANTES de importar otros módulos propios para que sus os.getenv()
+# de nivel de módulo (CRM_URL, CRM_TENANT, CRM_API_TOKEN, etc.) reciban los valores.
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Request
 
 from BotLogger import CRM_API_TOKEN, CRM_TENANT, CRM_URL, bot_log
@@ -18,8 +23,6 @@ from Filtro_Mensajes import (
     procesar_contenido,
 )
 from Historial_Conversacion import formatear_historial_para_ia, obtener_historial
-
-load_dotenv()
 
 app = FastAPI(title="Bot Vitta4", version="1.0.0")
 
@@ -37,16 +40,20 @@ _pending_data: dict[str, dict] = {}
 
 
 # ── Helpers: consultar pautas activas en el CRM y comparar con publicación FB
-async def _buscar_pautas_activas() -> list:
+async def _buscar_pautas_activas(instancia: str = "") -> list:
     """Consulta el módulo 'pautas' del CRM y retorna la lista de registros activos.
     Si no hay CRM configurado o falla la llamada, retorna lista vacía.
     """
-    if not CRM_URL or not CRM_TENANT or not CRM_API_TOKEN:
+    # Fallback de runtime: si los módulos se cargaron antes del load_dotenv
+    _url    = CRM_URL    or os.getenv("CRM_URL",    "").rstrip("/")
+    _tenant = CRM_TENANT or os.getenv("CRM_TENANT", "")
+    _token  = CRM_API_TOKEN or os.getenv("CRM_API_TOKEN", "")
+    if not _url or not _tenant or not _token:
         return []
-    url = f"{CRM_URL}/api/v1/{CRM_TENANT}/pautas?per_page=200"
+    url = f"{_url}/api/v1/{_tenant}/pautas?per_page=200"
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(url, headers={"X-API-Key": CRM_API_TOKEN})
+            resp = await client.get(url, headers={"X-API-Key": _token})
             resp.raise_for_status()
             data = resp.json()
             records = []
@@ -56,6 +63,7 @@ async def _buscar_pautas_activas() -> list:
                 records = data
     except Exception as e:
         print(f"[Pautas] error al consultar CRM: {e}")
+        await bot_log(instancia, "error", "Pautas", f"error al consultar CRM: {e}")
         return []
 
     def _activo(r: dict) -> bool:
@@ -215,37 +223,64 @@ async def _procesar_y_enviar(data: dict) -> None:
     await bot_log(instancia, "info", "vitta4",
         f"tipo_intencion={tipo_intencion!r} historial={'sí' if historial_texto else 'no'} flujo={flujo} paso={paso_flujo}")
 
-    # ── Antes de generar la respuesta: comprobar si la publicación viene de una pauta activa
+    # ── Antes de generar la respuesta: comprobar si hay pauta activa en el CRM
+    # Se ejecuta tanto para publicaciones de FB como para el primer contacto (historial vacío)
     try:
-        if (clasificacion.get("pub_facebook") or tipo_contenido == "publicacion_facebook"):
-            pautas = await _buscar_pautas_activas()
+        es_fb = clasificacion.get("pub_facebook") or tipo_contenido == "publicacion_facebook"
+        es_primer_contacto = not historial_texto.strip()
+        if es_fb or es_primer_contacto:
+            pautas = await _buscar_pautas_activas(instancia)
+            await bot_log(instancia, "info", "Pautas",
+                f"consultando pautas activas count={len(pautas)} es_fb={bool(es_fb)} es_primer_contacto={es_primer_contacto}")
             if pautas:
+                analisis_data = procesado.get("analisis") or {}
+                # Para FB usamos los campos de la publicación.
+                # Para mensajes no-FB usamos el texto del usuario como "descripcion" para el scoring,
+                # lo que permite comparar contra el contenido/mensaje de las pautas.
                 fb_info = {
-                    "titulo": titulo_fb,
-                    "descripcion": descripcion_fb,
-                    "productos_mencionados": (procesado.get("analisis") or {}).get("productos_mencionados") or (procesado.get("analisis") or {}).get("items") or [],
-                    "nombre_linea": (procesado.get("analisis") or {}).get("nombre_linea") or "",
+                    "titulo": titulo_fb or "",
+                    "descripcion": descripcion_fb or texto_para_bot,   # ← clave: fallback al texto del usuario
+                    "productos_mencionados": analisis_data.get("productos_mencionados") or analisis_data.get("items") or [],
+                    "nombre_linea": analisis_data.get("nombre_linea") or "",
                     "imagen": thumbnail_url or url_media,
                 }
-                best = None
-                best_score = 0.0
+
+                # Calcular score para TODAS las pautas
+                scores: list[tuple[float, dict]] = []
                 for p in pautas:
                     try:
                         s = _score_pauta_match(p, fb_info)
                     except Exception:
                         s = 0.0
-                    if s > best_score:
-                        best_score = s
-                        best = p
+                    scores.append((s, p))
+                scores.sort(key=lambda x: x[0], reverse=True)
 
-                # Umbral: si hay coincidencia razonable, usar el mensaje de la pauta
-                if best and best_score >= 1.5:
+                best_score, best = scores[0] if scores else (0.0, None)
+                second_score = scores[1][0] if len(scores) > 1 else 0.0
+
+                await bot_log(instancia, "info", "Pautas",
+                    f"scores top2: {best_score:.2f} / {second_score:.2f} "
+                    f"mejor={best.get('NOMBRE_PAUTA') or best.get('nombre_pauta') if best else None!r}")
+
+                # Umbrales de decisión:
+                #   FB            : score >= 1.5 (coincidencia semántica título/productos/imagen)
+                #   no-FB 1 pauta : score >= 0   (no hay otra opción; se usa la única activa)
+                #   no-FB >1 pauta: score >= 1.0 Y debe superar a la segunda en al menos 0.5
+                #                   (evita usar una pauta equivocada cuando hay varias activas)
+                usar_pauta = False
+                if best:
+                    if es_fb:
+                        usar_pauta = best_score >= 1.5
+                    elif len(pautas) == 1:
+                        usar_pauta = True  # única pauta activa → se usa siempre en primer contacto
+                    else:
+                        usar_pauta = best_score >= 1.0 and (best_score - second_score) >= 0.5
+
+                if usar_pauta and best:
                     matched_msg = best.get("MENSAJE") or best.get("mensaje") or best.get("message") or ""
                     if matched_msg:
-                        # No sobrescribir el texto original del usuario; guardar la pauta detectada
                         procesado.setdefault("analisis", {})["pauta_detectada"] = best
                         procesado.setdefault("analisis", {})["mensaje_pauta"] = matched_msg
-                        # Forzar intención si la pauta ya indica tipo
                         tipo_pauta = str(best.get("TIPO") or best.get("tipo") or "").lower()
                         if "negocio" in tipo_pauta or "afili" in tipo_pauta:
                             intencion = {"intencion": "negocio", "confianza": 0.95, "productos_mencionados": []}
@@ -255,9 +290,13 @@ async def _procesar_y_enviar(data: dict) -> None:
                             alt_int = await analizar_intencion(matched_msg) if matched_msg else None
                             if alt_int:
                                 intencion = alt_int
-                        await bot_log(instancia, "info", "Pautas", f"pauta_detectada titulo={best.get('NOMBRE_PAUTA') or best.get('nombre_pauta')} score={best_score}")
+                        await bot_log(instancia, "info", "Pautas",
+                            f"pauta_USADA nombre={best.get('NOMBRE_PAUTA') or best.get('nombre_pauta')!r} "
+                            f"score={best_score:.2f} modo={'fb' if es_fb else 'primer_contacto'}")
                 else:
-                    await bot_log(instancia, "info", "Pautas", f"no_match_con_pautas count={len(pautas)} best_score={best_score}")
+                    await bot_log(instancia, "info", "Pautas",
+                        f"no_match_con_pautas count={len(pautas)} best_score={best_score:.2f} "
+                        f"second_score={second_score:.2f} es_fb={bool(es_fb)}")
     except Exception as e:
         await bot_log(instancia, "error", "Pautas", f"Error checando pautas: {e}")
 

@@ -225,12 +225,17 @@ OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "10"))
 
 
 async def _crm_get(module: str, params: dict | None = None) -> list | dict | None:
-    if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN):
+    # Re-leer en tiempo de ejecución por si load_dotenv() se llamó después de la importación
+    _url    = CRM_URL    or os.getenv("CRM_URL", "").rstrip("/")
+    _tenant = CRM_TENANT or os.getenv("CRM_TENANT", "")
+    _token  = CRM_API_TOKEN or os.getenv("CRM_API_TOKEN", "")
+    if not (_url and _tenant and _token):
+        print("[CRM] _crm_get: CRM no configurado (CRM_URL/CRM_TENANT/CRM_API_TOKEN vacíos)")
         return None
-    url = f"{CRM_URL}/api/v1/{CRM_TENANT}/{module}"
+    url = f"{_url}/api/v1/{_tenant}/{module}"
     try:
         async with httpx.AsyncClient(timeout=CRM_TIMEOUT) as client:
-            resp = await client.get(url, headers={"X-API-Key": CRM_API_TOKEN}, params=params or {})
+            resp = await client.get(url, headers={"X-API-Key": _token}, params=params or {})
             resp.raise_for_status()
             data = resp.json()
             try:
@@ -245,12 +250,16 @@ async def _crm_get(module: str, params: dict | None = None) -> list | dict | Non
 
 
 async def _crm_get_by_id(module: str, id: Any) -> dict | None:
-    if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN):
+    # Re-leer en tiempo de ejecución por si load_dotenv() se llamó después de la importación
+    _url    = CRM_URL    or os.getenv("CRM_URL", "").rstrip("/")
+    _tenant = CRM_TENANT or os.getenv("CRM_TENANT", "")
+    _token  = CRM_API_TOKEN or os.getenv("CRM_API_TOKEN", "")
+    if not (_url and _tenant and _token):
         return None
-    url = f"{CRM_URL}/api/v1/{CRM_TENANT}/{module}/{id}"
+    url = f"{_url}/api/v1/{_tenant}/{module}/{id}"
     try:
         async with httpx.AsyncClient(timeout=CRM_TIMEOUT) as client:
-            resp = await client.get(url, headers={"X-API-Key": CRM_API_TOKEN})
+            resp = await client.get(url, headers={"X-API-Key": _token})
             resp.raise_for_status()
             data = resp.json()
             # Algunos endpoints devuelven {data: {...}}
@@ -336,14 +345,44 @@ async def _buscar_en_catalogos(historial_texto: str, analisis: dict, intencion: 
         partes.append(analisis.get("resumen_para_bot"))
     if analisis.get("contexto_usuario"):
         partes.append(analisis.get("contexto_usuario"))
-    # últimas líneas de usuario del historial
+
+    # Usar TODOS los mensajes de usuario del historial (no solo el último).
+    # El primer mensaje frecuentemente contiene el [CONTEXTO_ANUNCIO] con el nombre del producto
+    # y los últimos mensajes contienen el problema/síntomas del usuario.
     if historial_texto:
         usuarios = re.findall(r"Usuario:\s*(.+)", historial_texto)
         if usuarios:
-            partes.append(usuarios[-1])
+            partes.append(usuarios[-1])          # último mensaje: describe síntomas/problema
+            if len(usuarios) > 1:
+                partes.append(usuarios[0])       # primer mensaje: contiene contexto del anuncio/producto
+
+    # Extraer nombres de productos del historial cuando intencion/analisis no los proveen.
+    # Ej: "[PreBiotics, Aloe Vera Stix, Tea4Life]" o el título del anuncio de Facebook.
+    productos_hist: list[str] = list(intencion.get("productos_mencionados") or [])
+    if isinstance(analisis.get("items"), list):
+        for p in analisis["items"]:
+            if p and p not in productos_hist:
+                productos_hist.append(p)
+    if not productos_hist and historial_texto:
+        # Lista entre corchetes con productos típicos de 4Life
+        m_lista = re.search(r"\[([^\[\]]+(?:,|Stix|Life|Tea|Pre|Aloe|4Life)[^\[\]]+)\]", historial_texto)
+        if m_lista:
+            productos_hist = [p.strip() for p in m_lista.group(1).split(",") if p.strip()]
+        # Si no, buscar el título del anuncio
+        if not productos_hist:
+            m_titulo = re.search(r"Titulo anuncio:\s*(.+)", historial_texto, re.IGNORECASE)
+            if m_titulo:
+                productos_hist = [m_titulo.group(1).strip()]
+        # Texto del anuncio como último recurso
+        if not productos_hist:
+            m_anuncio = re.search(r"Texto anuncio:\s*\"?(.{10,120})", historial_texto, re.IGNORECASE)
+            if m_anuncio:
+                partes.append(m_anuncio.group(1).strip().rstrip('"'))
+    if productos_hist:
+        partes.append(" ".join(productos_hist))
 
     query = " ".join(p for p in partes if p)[:800]
-    print(f"[CRMCAT] buscar_en_catalogos query={query!r} partes={len(partes)} analisis_keys={list(analisis.keys())} intencion_products={intencion.get('productos_mencionados')}")
+    print(f"[CRMCAT] buscar_en_catalogos query={query!r} partes={len(partes)} productos_hist={productos_hist} analisis_keys={list(analisis.keys())} intencion_products={intencion.get('productos_mencionados')}")
 
     # 1) Buscar testimonios
     try:
@@ -414,19 +453,25 @@ async def _buscar_en_catalogos(historial_texto: str, analisis: dict, intencion: 
         if productos:
             product_records.extend(productos)
 
-    # 4) Filtrar por productos que venían en la publicación (si aplica)
-    productos_fb = intencion.get("productos_mencionados") or []
+    # 4) Filtrar por productos que venían en la publicación / historial (si aplica)
     items_fb = []
     if isinstance(analisis.get("items"), list):
         items_fb = analisis.get("items")
-    productos_fb = [p for p in (productos_fb or []) if p] + [p for p in items_fb if p]
-    productos_fb = [p.lower() for p in productos_fb]
+    # Usar productos_hist (ya calculado arriba) para no perder el contexto del anuncio
+    filtro_nombres = [p.lower() for p in productos_hist if p] + [p.lower() for p in items_fb if p]
+    # Quitar duplicados manteniendo orden
+    seen: set = set()
+    filtro_nombres_unico = []
+    for n in filtro_nombres:
+        if n not in seen:
+            seen.add(n)
+            filtro_nombres_unico.append(n)
 
-    if productos_fb and product_records:
+    if filtro_nombres_unico and product_records:
         filtered = []
         for pr in product_records:
             name = _pick_field(pr, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or pr.get("nombre") or pr.get("PRODUCTO") or ""
-            if name and any(fb in name.lower() for fb in productos_fb):
+            if name and any(fb in name.lower() for fb in filtro_nombres_unico):
                 filtered.append(pr)
         if filtered:
             return filtered
