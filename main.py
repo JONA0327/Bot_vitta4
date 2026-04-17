@@ -462,7 +462,11 @@ async def _procesar_y_enviar(data: dict) -> None:
     except Exception:
         pass
 
-    await bot_log(instancia, "info", "Bot", f"respuesta generada ({len(respuesta)} chars) tel={telefono}")
+    if mensagens_multi:
+        n_msgs = len(mensagens_multi)
+        await bot_log(instancia, "info", "Bot", f"respuesta multi-mensaje ({n_msgs} partes) tel={telefono}")
+    else:
+        await bot_log(instancia, "info", "Bot", f"respuesta generada ({len(respuesta or '')} chars) tel={telefono}")
 
     # ── Enviar al usuario vía CRM /bot-send ───────────────────────────────────
     async def _enviar(texto: str, user_msg: str = "", medios: list | None = None) -> None:
