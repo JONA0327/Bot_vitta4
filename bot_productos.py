@@ -581,28 +581,46 @@ async def _ia_elegir_productos(
     productos: list,
     condicion: str,
     sintomas: list,
+    causas: list | None = None,
 ) -> list:
-    """Usa IA para filtrar y ordenar los productos más relevantes (solo disponibles)."""
+    """Usa IA para filtrar ESTRICTAMENTE los productos genuinamente relevantes.
+    Analiza la descripción completa de cada producto para decidir si aplica.
+    Si ningún producto ayuda realmente a la condición, retorna lista vacía."""
     disponibles = [p for p in productos if _is_disponible(p)]
     if not disponibles or not OPENAI_API_KEY:
-        return disponibles[:5]
+        return []
 
-    if len(disponibles) <= 3:
-        return disponibles
-
+    causas = causas or []
     lines = []
     for i, p in enumerate(disponibles):
         nombre = _pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
         desc = _pick_field(p, ["DESCRIPCION", "descripcion", "description"]) or ""
-        lines.append(f"[{i}] {nombre}: {desc[:150]}")
+        # Incluir descripción completa sin truncar para análisis preciso
+        lines.append(f"[{i}] Producto: {nombre}\nDescripción: {desc}")
 
-    productos_txt = "\n".join(lines)
-    sintomas_txt = ", ".join(sintomas) if sintomas else condicion
+    productos_txt = "\n---\n".join(lines)
+    sintomas_txt = ", ".join(sintomas) if sintomas else "no especificados"
+    causas_txt = ", ".join(causas) if causas else "no especificadas"
 
-    prompt = (
-        f"Paciente con {condicion} (síntomas: {sintomas_txt}).\n"
-        f"Productos disponibles:\n{productos_txt}\n\n"
-        "Lista los índices de los 1-3 productos más relevantes separados por coma. Solo índices. Ejemplo: 0,2"
+    system_prompt = (
+        "Eres un experto en suplementos nutricionales. "
+        "Tu tarea es analizar CUIDADOSAMENTE la descripción completa de cada producto "
+        "y determinar si realmente beneficia la condición del paciente. "
+        "Lee cada descripción palabra por palabra antes de decidir. "
+        "Sé ESTRICTO: solo incluye productos cuya descripción indique claramente que ayuda "
+        "a esa condición específica, síntomas o causas. "
+        "Si la descripción habla de algo completamente diferente, NO lo incluyas."
+    )
+
+    user_prompt = (
+        f"Condición del paciente: {condicion}\n"
+        f"Síntomas: {sintomas_txt}\n"
+        f"Posibles causas: {causas_txt}\n\n"
+        f"Catálogo de productos disponibles:\n{productos_txt}\n\n"
+        "INSTRUCCIÓN: Analiza la descripción de cada producto. "
+        "Lista SOLO los índices de productos que genuinamente ayudan a esta condición (máximo 3). "
+        "Si ninguno aplica realmente, responde exactamente: -1\n"
+        "Responde solo con índices separados por coma o -1. Sin texto adicional. Ejemplo: 0,2"
     )
 
     try:
@@ -613,18 +631,28 @@ async def _ia_elegir_productos(
                 json={
                     "model": "gpt-4o-mini",
                     "temperature": 0,
-                    "max_tokens": 20,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 30,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
                 },
             )
             resp.raise_for_status()
             raw = resp.json()["choices"][0]["message"]["content"].strip()
+            # Si la IA dice -1, ningún producto aplica
+            if raw.strip().startswith("-1") or raw.strip() == "-1":
+                print(f"[CRMCAT] IA determinó que ningún producto aplica para condición='{condicion}'")
+                return []
             indices = [int(x.strip()) for x in re.findall(r"\d+", raw) if 0 <= int(x.strip()) < len(disponibles)]
             if indices:
-                return [disponibles[i] for i in indices]
+                seleccionados = [disponibles[i] for i in indices]
+                nombres = [_pick_field(p, ["PRODUCTO","producto","NOMBRE","nombre","title"]) or "?" for p in seleccionados]
+                print(f"[CRMCAT] IA seleccionó {len(seleccionados)} productos: {nombres} para condición='{condicion}'")
+                return seleccionados
     except Exception as e:
         print(f"[CRMCAT] error en _ia_elegir_productos: {e}")
-    return disponibles[:3]
+    return []
 
 
 async def _buscar_testimonios_por_condicion(query: str) -> list:
@@ -817,6 +845,7 @@ async def _buscar_en_catalogos(
                 todos_productos,
                 condicion=condicion_detectada,
                 sintomas=sintomas,
+                causas=causas_posibles,
             )
         elif todos_productos:
             product_records = [p for p in todos_productos if _is_disponible(p)][:3]
@@ -1343,31 +1372,7 @@ async def responder_productos(
         except Exception:
             pass
 
-    # Si no se encontraron productos en catálogos, seguir con el flujo LLM genérico
-    messages: list[dict] = [{"role": "system", "content": _PRODUCTOS_SYSTEM}]
-
-    if historial_texto:
-        messages.append({"role": "system", "content": f"HISTORIAL DE LA CONVERSACIÓN (más antiguo a más reciente):\n{historial_texto}",})
-    if contexto_str:
-        messages.append({"role": "system", "content": f"CONTEXTO ADICIONAL DEL MENSAJE ACTUAL:\n{contexto_str}",})
-    messages.append({"role": "user", "content": texto_usuario})
-
-    try:
-        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
-            resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "gpt-4o-mini",
-                    "temperature": 0.7,
-                    "max_tokens": 500,
-                    "messages": messages,
-                },
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"].strip()
-    except Exception:
-        return None
+    # Sin productos en catálogo → no responder y pausar la conversación
+    # (el bot SIEMPRE depende del catálogo; nunca genera respuestas genéricas en PASO4)
+    print(f"[PASO4] sin productos en catálogo para condicion='{condicion_detectada}' → pausando")
+    return {"texto": None, "pausar": True, "motivo": "sin_productos_catalogo"}

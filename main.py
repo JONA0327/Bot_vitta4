@@ -404,6 +404,37 @@ async def _procesar_y_enviar(data: dict) -> None:
     respuesta: str | None = None
     medios = None
     if isinstance(resultado, dict):
+        # Si el bot indica que no hay productos en catálogo → pausar sin responder
+        if resultado.get("pausar"):
+            motivo = resultado.get("motivo", "sin_productos_catalogo")
+            await bot_log(instancia, "info", "Bot",
+                f"PASO4 sin productos en catálogo ({motivo}) → pausando tel={telefono}")
+            try:
+                from Historial_Conversacion import IrrelevantConversationModel
+            except ImportError:
+                IrrelevantConversationModel = None
+            # Marcar conversación como pausada via CRM bot-send con señal especial
+            async def _pausar_conv() -> None:
+                if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN):
+                    return
+                try:
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        await client.post(
+                            f"{CRM_URL}/api/v1/{CRM_TENANT}/bot-send",
+                            headers={"X-API-Key": CRM_API_TOKEN, "Content-Type": "application/json"},
+                            json={
+                                "telefono":     telefono,
+                                "remote_jid":   remote_jid,
+                                "instancia":    instancia,
+                                "tipo_bloqueo": "irrelevante",
+                                "motivo":       "sin_productos_catalogo",
+                                "respuesta":    "",
+                            },
+                        )
+                except Exception as exc:
+                    await bot_log(instancia, "error", "BotSend", f"Error pausando: {exc}")
+            await _pausar_conv()
+            return
         respuesta = resultado.get("texto")
         medios = resultado.get("medios")
     else:
