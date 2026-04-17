@@ -394,59 +394,100 @@ def _is_disponible(p: dict) -> bool:
     return str(val).strip().lower() in ("1", "true", "si", "sí", "disponible", "activo", "available")
 
 
+def _all_strings(v, _depth: int = 0) -> list[str]:
+    """Extrae recursivamente todos los strings de un valor (puede ser str/list/dict anidado)."""
+    if _depth > 5:
+        return []
+    if isinstance(v, str):
+        return [v] if v.strip() else []
+    if isinstance(v, list):
+        out = []
+        for item in v:
+            out.extend(_all_strings(item, _depth + 1))
+        return out
+    if isinstance(v, dict):
+        out = []
+        for val in v.values():
+            out.extend(_all_strings(val, _depth + 1))
+        return out
+    return []
+
+
 def _pick_imagen(p: dict) -> str:
-    """Busca la URL de imagen de un producto en todos sus campos.
-    Primero intenta nombres conocidos, luego escanea todos los valores
-    en datos buscando URLs con extensiones de imagen o rutas /storage/.
-    """
-    # Intentar nombres de campo conocidos
-    known = _pick_field(p, [
+    """Busca la URL de imagen de un producto escaneando todos los campos recursivamente."""
+    datos = p.get("datos") if isinstance(p.get("datos"), dict) else p
+
+    _IMG_KEYS = [
         "IMAGEN", "imagen", "FOTO", "foto", "IMAGE", "image",
         "IMAGEN_PRODUCTO", "imagen_producto", "IMAGEN_URL", "imagen_url",
         "URL_IMAGEN", "url_imagen", "PHOTO", "photo", "IMG", "img",
         "IMAGE_URL", "image_url", "FOTO_URL", "foto_url",
         "thumbnail", "THUMBNAIL", "portada", "PORTADA",
-    ])
-    if known:
-        return str(known)
-    # Escanear todos los campos de datos buscando URLs de imagen
-    datos = p.get("datos") if isinstance(p.get("datos"), dict) else p
+    ]
     _IMG_EXTS = ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp')
+    _IMG_PATHS = ('/storage/', '/uploads/', '/catalog/', '/images/', '/media/', '/img/')
+
+    def _is_image_url(s: str) -> bool:
+        sl = s.lower()
+        if any(sl.endswith(ext) or (ext + '?') in sl or (ext + '&') in sl for ext in _IMG_EXTS):
+            return True
+        if s.startswith('http') and any(p in sl for p in _IMG_PATHS):
+            return True
+        return False
+
+    # 1) Campos con nombres conocidos (valores pueden ser nested)
+    for key in _IMG_KEYS:
+        if key in datos:
+            for sv in _all_strings(datos[key]):
+                if _is_image_url(sv):
+                    return sv
+
+    # 2) Escanear TODOS los campos recursivamente
     for k, v in datos.items():
-        if not v:
+        if k in _IMG_KEYS:  # ya revisados arriba
             continue
-        sv = str(v)
-        sv_lower = sv.lower()
-        if any(sv_lower.endswith(ext) or (ext + '?') in sv_lower for ext in _IMG_EXTS):
-            return sv
-        if ('/storage/' in sv_lower or '/uploads/' in sv_lower or '/catalog/' in sv_lower) and sv.startswith('http'):
-            return sv
+        for sv in _all_strings(v):
+            if _is_image_url(sv):
+                return sv
     return ""
 
 
 def _pick_video(p: dict) -> str:
-    """Busca la URL de video de un producto en todos sus campos."""
-    known = _pick_field(p, [
+    """Busca la URL de video de un producto escaneando todos los campos recursivamente."""
+    datos = p.get("datos") if isinstance(p.get("datos"), dict) else p
+
+    _VID_KEYS = [
         "VIDEO", "video", "VIDEO_URL", "video_url", "URL_VIDEO", "url_video",
         "VIDEO_LINK", "video_link", "LINK_VIDEO", "link_video",
-        "VIDEO_PRODUCTO", "video_producto",
-    ])
-    if known:
-        return str(known)
-    # Escanear todos los campos buscando URLs de video
-    datos = p.get("datos") if isinstance(p.get("datos"), dict) else p
+        "VIDEO_PRODUCTO", "video_producto", "ENLACE", "enlace", "LINK", "link",
+    ]
     _VID_EXTS = ('.mp4', '.mov', '.avi', '.webm', '.mkv')
-    _VID_DOMAINS = ('youtube.com', 'youtu.be', 'vimeo.com', 'drive.google.com')
+    _VID_DOMAINS = ('youtube.com', 'youtu.be', 'vimeo.com', 'drive.google.com', 'fb.watch')
+
+    def _is_video_url(s: str) -> bool:
+        sl = s.lower()
+        if any(sl.endswith(ext) or (ext + '?') in sl or (ext + '&') in sl for ext in _VID_EXTS):
+            return True
+        if s.startswith('http') and any(d in sl for d in _VID_DOMAINS):
+            return True
+        return False
+
+    # 1) Campos con nombres conocidos (valores pueden ser nested)
+    for key in _VID_KEYS:
+        if key in datos:
+            for sv in _all_strings(datos[key]):
+                if _is_video_url(sv):
+                    return sv
+
+    # 2) Escanear TODOS los campos recursivamente
     for k, v in datos.items():
-        if not v:
+        if k in _VID_KEYS:
             continue
-        sv = str(v)
-        sv_lower = sv.lower()
-        if any(sv_lower.endswith(ext) or (ext + '?') in sv_lower for ext in _VID_EXTS):
-            return sv
-        if sv.startswith('http') and any(d in sv_lower for d in _VID_DOMAINS):
-            return sv
+        for sv in _all_strings(v):
+            if _is_video_url(sv):
+                return sv
     return ""
+
 
 
 async def _obtener_todos_testimonios(per_page: int = 100) -> list:
@@ -1234,13 +1275,29 @@ async def responder_productos(
                 if bot_asked_video:
                     medios = []
                     if ids_marker:
-                        # Obtener cada producto por ID vía endpoint individual
+                        # Obtener productos por IDs via endpoint batch (?__ids=1,2,3)
                         prod_ids = [int(x.strip()) for x in ids_marker.group(1).split("|") if x.strip().isdigit()]
-                        for pid in prod_ids:
-                            prod_data = await _crm_get_by_id("productos", pid)
-                            if prod_data:
+                        print(f"[VideoHandler] buscando videos para prod_ids={prod_ids}")
+                        if prod_ids:
+                            ids_csv = ",".join(str(i) for i in prod_ids)
+                            batch_res = await _crm_get("productos", {"__ids": ids_csv, "per_page": 50})
+                            batch_prods = []
+                            if batch_res:
+                                raw = batch_res.get("data") if isinstance(batch_res, dict) and batch_res.get("data") is not None else batch_res
+                                batch_prods = raw if isinstance(raw, list) else []
+                            # Fallback: individual lookups if batch returned nothing
+                            if not batch_prods:
+                                for pid in prod_ids:
+                                    pd = await _crm_get_by_id("productos", pid)
+                                    if pd:
+                                        batch_prods.append(pd)
+                            for prod_data in batch_prods:
+                                datos_layer = prod_data.get("datos") if isinstance(prod_data.get("datos"), dict) else prod_data
+                                pid = prod_data.get("id", "?")
+                                print(f"[VideoHandler] id={pid} campos={list(datos_layer.keys())[:20]}")
                                 video_url = _pick_video(prod_data)
                                 nombre = str(_pick_field(prod_data, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or f"Producto {pid}")
+                                print(f"[VideoHandler] id={pid} nombre={nombre!r} video_url={video_url!r}")
                                 if video_url:
                                     medios.append({"tipo": "video", "url": video_url, "caption": nombre})
                     else:
@@ -1370,6 +1427,8 @@ async def responder_productos(
             nombre = str(_pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or p.get("nombre") or "")
             descripcion = str(_pick_field(p, ["DESCRIPCION", "descripcion", "description"]) or p.get("descripcion") or "")
             imagen = _pick_imagen(p)
+            datos_layer = p.get("datos") if isinstance(p.get("datos"), dict) else p
+            print(f"[PASO4] prod id={p.get('id')} campos={list(datos_layer.keys())[:20]} imagen={imagen!r}")
             partes_prod.append(f"Nombre: {nombre}\nDescripción: {descripcion}")
             if nombre and imagen:
                 img_map[nombre.lower()] = imagen
