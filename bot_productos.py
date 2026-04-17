@@ -413,6 +413,17 @@ def _all_strings(v, _depth: int = 0) -> list[str]:
     return []
 
 
+def _make_absolute_url(url: str) -> str:
+    """Convierte una URL relativa (que empieza con /) en absoluta usando CRM_URL."""
+    if url.startswith('http://') or url.startswith('https://'):
+        return url
+    if url.startswith('/'):
+        _base = CRM_URL or os.getenv('CRM_URL', '').rstrip('/')
+        if _base:
+            return _base + url
+    return url
+
+
 def _pick_imagen(p: dict) -> str:
     """Busca la URL de imagen de un producto escaneando todos los campos recursivamente."""
     datos = p.get("datos") if isinstance(p.get("datos"), dict) else p
@@ -431,16 +442,26 @@ def _pick_imagen(p: dict) -> str:
         sl = s.lower()
         if any(sl.endswith(ext) or (ext + '?') in sl or (ext + '&') in sl for ext in _IMG_EXTS):
             return True
+        # Relative paths that look like storage paths
+        if s.startswith('/') and any(p in sl for p in _IMG_PATHS):
+            return True
         if s.startswith('http') and any(p in sl for p in _IMG_PATHS):
             return True
         return False
+
+    pid = p.get('id', '?')
+    all_field_vals = {k: str(v)[:80] for k, v in datos.items()}
+    print(f"[pick_imagen] id={pid} todos_campos={list(datos.keys())}")
+    print(f"[pick_imagen] id={pid} valores={all_field_vals}")
 
     # 1) Campos con nombres conocidos (valores pueden ser nested)
     for key in _IMG_KEYS:
         if key in datos:
             for sv in _all_strings(datos[key]):
                 if _is_image_url(sv):
-                    return sv
+                    url = _make_absolute_url(sv)
+                    print(f"[pick_imagen] id={pid} ENCONTRADO en campo conocido '{key}': {url!r}")
+                    return url
 
     # 2) Escanear TODOS los campos recursivamente
     for k, v in datos.items():
@@ -448,7 +469,10 @@ def _pick_imagen(p: dict) -> str:
             continue
         for sv in _all_strings(v):
             if _is_image_url(sv):
-                return sv
+                url = _make_absolute_url(sv)
+                print(f"[pick_imagen] id={pid} ENCONTRADO en campo genérico '{k}': {url!r}")
+                return url
+    print(f"[pick_imagen] id={pid} NO encontrado — ningún campo tiene URL de imagen")
     return ""
 
 
@@ -472,12 +496,18 @@ def _pick_video(p: dict) -> str:
             return True
         return False
 
+    pid = p.get('id', '?')
+    print(f"[pick_video] id={pid} todos_campos={list(datos.keys())}")
+
     # 1) Campos con nombres conocidos (valores pueden ser nested)
     for key in _VID_KEYS:
         if key in datos:
             for sv in _all_strings(datos[key]):
+                print(f"[pick_video] id={pid} campo conocido '{key}' valor={sv!r}")
                 if _is_video_url(sv):
-                    return sv
+                    url = _make_absolute_url(sv)
+                    print(f"[pick_video] id={pid} ENCONTRADO en '{key}': {url!r}")
+                    return url
 
     # 2) Escanear TODOS los campos recursivamente
     for k, v in datos.items():
@@ -485,7 +515,10 @@ def _pick_video(p: dict) -> str:
             continue
         for sv in _all_strings(v):
             if _is_video_url(sv):
-                return sv
+                url = _make_absolute_url(sv)
+                print(f"[pick_video] id={pid} ENCONTRADO en campo genérico '{k}': {url!r}")
+                return url
+    print(f"[pick_video] id={pid} NO encontrado — ningún campo tiene URL de video")
     return ""
 
 
@@ -1482,6 +1515,7 @@ async def responder_productos(
                     intro_text = str(llm_data.get("intro") or "").strip()
                     llm_prods = llm_data.get("productos") or []
                     if intro_text and llm_prods:
+                        print(f"[PASO4] img_map={img_map}")
                         mensagens: list[dict] = [{"texto": intro_text}]
                         for prod_info in llm_prods[:6]:
                             prod_nombre = str(prod_info.get("nombre") or "").strip()
@@ -1495,6 +1529,7 @@ async def responder_productos(
                                     img_url = url
                                     break
                             prod_medios = [{"tipo": "imagen", "url": img_url, "caption": prod_nombre}] if img_url else []
+                            print(f"[PASO4] prod_nombre={prod_nombre!r} img_url={img_url!r} prod_medios={prod_medios}")
                             mensagens.append({"texto": f"*{prod_nombre}*\n{prod_desc}", "medios": prod_medios})
                         video_q = "¿Deseas ver un video de los productos recomendados? Responde *sí* para recibir los videos."
                         mensagens.append({"texto": video_q + ("\n" + ids_marker if ids_marker else "")})

@@ -190,6 +190,7 @@ async def _procesar_y_enviar(data: dict) -> None:
     thumbnail_url  = data.get("thumbnail_url_b64") or data.get("thumbnail_url", "")
     remote_jid     = data.get("remote_jid", "")
     alt_phones     = data.get("alt_phones", [])
+    contact_name   = data.get("contact_name") or None
 
     # ── Historial (usar cache si ya se obtuvo al recibir el mensaje) ──────────
     historial = data.get("_historial_cache")
@@ -375,6 +376,8 @@ async def _procesar_y_enviar(data: dict) -> None:
                         "respuesta":    texto,
                         "user_message": user_msg,
                     }
+                    if contact_name:
+                        payload["contact_name"] = contact_name
                     if medios:
                         payload["medios"] = medios
                     resp = await client.post(
@@ -474,32 +477,29 @@ async def _procesar_y_enviar(data: dict) -> None:
             await bot_log(instancia, "warning", "BotSend", "CRM no configurado — respuesta no enviada")
             return
         try:
+            print(f"[_enviar] texto={texto[:80]!r} medios={medios}")
             async with httpx.AsyncClient(timeout=15) as client:
+                _payload: dict = {
+                    "telefono":     telefono,
+                    "remote_jid":   remote_jid,
+                    "instancia":    instancia,
+                    "respuesta":    texto,
+                    "user_message": user_msg,
+                }
+                if contact_name:
+                    _payload["contact_name"] = contact_name
+                if medios:
+                    _payload["medios"] = medios
                 resp = await client.post(
                     f"{CRM_URL}/api/v1/{CRM_TENANT}/bot-send",
                     headers={"X-API-Key": CRM_API_TOKEN, "Content-Type": "application/json"},
-                    json=(
-                        {
-                            "telefono":     telefono,
-                            "remote_jid":   remote_jid,
-                            "instancia":    instancia,
-                            "respuesta":    texto,
-                            "user_message": user_msg,
-                        }
-                        if not medios
-                        else {
-                            "telefono":     telefono,
-                            "remote_jid":   remote_jid,
-                            "instancia":    instancia,
-                            "respuesta":    texto,
-                            "user_message": user_msg,
-                            "medios":        medios,
-                        }
-                    ),
+                    json=_payload,
                 )
                 if resp.status_code not in (200, 201):
                     await bot_log(instancia, "error", "BotSend",
                         f"bot-send retornó {resp.status_code}: {resp.text[:200]}")
+                else:
+                    print(f"[_enviar] OK status={resp.status_code} medios_count={len(medios) if medios else 0}")
         except Exception as exc:
             await bot_log(instancia, "error", "BotSend", f"Error en bot-send: {exc}")
 
@@ -609,6 +609,7 @@ async def vitta4(request: Request) -> dict[str, Any]:
     tipo_contenido = body.get("tipo_contenido", "texto")
     telefono       = body.get("telefono", "desconocido")
     instancia      = body.get("instancia", "")
+    contact_name   = body.get("contact_name") or None
     url_media      = body.get("url_media", "")
     caption        = body.get("caption", "")
     titulo_fb      = body.get("titulo_fb", "")
@@ -672,6 +673,7 @@ async def vitta4(request: Request) -> dict[str, Any]:
         "thumbnail_url_b64": thumbnail_url_b64,  # base64 pre-descargado
         "remote_jid":        _remote_jid,
         "alt_phones":        _alt_phones,
+        "contact_name":      contact_name,
     }
     _pending_tasks[clave] = asyncio.create_task(_ejecutar_debounce(clave))
 
