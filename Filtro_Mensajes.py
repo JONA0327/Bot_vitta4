@@ -260,25 +260,49 @@ async def analizar_imagen(url_imagen: str) -> dict | None:
 # ─── Transcripción de AUDIO (Whisper) ────────────────────────────────────────
 async def transcribir_audio(url_audio: str) -> str | None:
     """
-    Descarga el audio desde url_audio y lo transcribe con Whisper.
+    Transcribe audio desde una URL directa o un data URI base64.
     Retorna el texto transcrito o None si falla.
     """
     if not OPENAI_API_KEY or not url_audio:
         return None
+
+    _MIME_TO_EXT = {
+        "audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/mp4": "m4a",
+        "audio/wav": "wav", "audio/webm": "webm", "audio/mp4": "m4a",
+    }
+    _EXT_MIME = {v: k for k, v in _MIME_TO_EXT.items()}
+
     try:
+        # ── data URI (base64 enviado por el CRM) ──────────────────────────────
+        if url_audio.startswith("data:"):
+            import base64 as _b64
+            header, encoded = url_audio.split(",", 1)
+            mime = header.split(":")[1].split(";")[0].lower()
+            audio_bytes = _b64.b64decode(encoded)
+            ext = _MIME_TO_EXT.get(mime, "ogg")
+            filename = f"audio.{ext}"
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                    files={
+                        "file": (filename, audio_bytes, mime),
+                        "model": (None, "whisper-1"),
+                        "language": (None, "es"),
+                    },
+                )
+                resp.raise_for_status()
+                return resp.json().get("text", "").strip() or None
+
+        # ── URL directa: descargar y transcribir ──────────────────────────────
         async with httpx.AsyncClient(timeout=30.0) as client:
             dl = await client.get(url_audio)
             dl.raise_for_status()
             audio_bytes = dl.content
 
             ext = url_audio.split("?")[0].rsplit(".", 1)[-1].lower()
-            mime_map = {
-                "ogg": "audio/ogg", "mp3": "audio/mpeg",
-                "m4a": "audio/mp4",  "wav": "audio/wav",
-                "webm": "audio/webm", "mp4": "audio/mp4",
-            }
-            mime = mime_map.get(ext, "audio/ogg")
-            filename = f"audio.{ext if ext in mime_map else 'ogg'}"
+            mime = _EXT_MIME.get(ext, "audio/ogg")
+            filename = f"audio.{ext if ext in _EXT_MIME else 'ogg'}"
 
             resp = await client.post(
                 "https://api.openai.com/v1/audio/transcriptions",
