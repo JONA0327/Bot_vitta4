@@ -67,15 +67,21 @@ async def _buscar_pautas_activas(instancia: str = "") -> list:
         await bot_log(instancia, "error", "Pautas", f"error al consultar CRM: {e}")
         return []
 
+    def _record_datos(r: dict) -> dict:
+        """Unwrap the 'datos' layer from a CatalogRecord API response."""
+        if isinstance(r.get("datos"), dict):
+            return r["datos"]
+        return r
+
     def _activo(r: dict) -> bool:
+        d = _record_datos(r)
         v = None
-        for k in ("status", "STATUS", "activo", "Activo", "Activo_Pauta", "estado"):
-            if k in r:
-                v = str(r[k]).lower()
+        for k in ("STATUS", "status", "activo", "Activo", "Activo_Pauta", "estado"):
+            if k in d:
+                v = str(d[k]).lower()
                 break
         if v is None:
-            # intentar campo genérico
-            v = str(r.get("status", r.get("STATUS", ""))).lower()
+            v = ""
         return v in ("activo", "true", "1", "si", "sí", "enabled")
 
     return [r for r in (records or []) if _activo(r)]
@@ -85,14 +91,22 @@ def _normalize_text(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().lower())
 
 
+def _pauta_datos(pauta: dict) -> dict:
+    """Unwrap the 'datos' layer from a CatalogRecord API response."""
+    if isinstance(pauta.get("datos"), dict):
+        return pauta["datos"]
+    return pauta
+
+
 def _score_pauta_match(pauta: dict, fb: dict) -> float:
     """Devuelve un puntaje (float) que indica cuán probable es que la pauta
     corresponda a la publicación de Facebook (`fb`)."""
+    d = _pauta_datos(pauta)
     pauta_title = _normalize_text(
-        pauta.get("NOMBRE_PAUTA") or pauta.get("nombre_pauta") or pauta.get("titulo") or pauta.get("name") or ""
+        d.get("NOMBRE_PAUTA") or d.get("nombre_pauta") or d.get("titulo") or d.get("name") or ""
     )
-    pauta_msg = _normalize_text(pauta.get("MENSAJE") or pauta.get("mensaje") or pauta.get("descripcion") or pauta.get("message") or "")
-    pauta_img = (pauta.get("IMAGEN_PAUTA") or pauta.get("imagen_pauta") or pauta.get("imagen") or "")
+    pauta_msg = _normalize_text(d.get("MENSAJE") or d.get("mensaje") or d.get("descripcion") or d.get("message") or "")
+    pauta_img = (d.get("IMAGEN_PAUTA") or d.get("imagen_pauta") or d.get("imagen") or "")
 
     fb_title = _normalize_text(fb.get("titulo") or fb.get("title") or "")
     fb_msg = _normalize_text(fb.get("descripcion") or fb.get("mensaje") or fb.get("resumen_para_bot") or "")
@@ -261,7 +275,7 @@ async def _procesar_y_enviar(data: dict) -> None:
 
                 await bot_log(instancia, "info", "Pautas",
                     f"scores top2: {best_score:.2f} / {second_score:.2f} "
-                    f"mejor={best.get('NOMBRE_PAUTA') or best.get('nombre_pauta') if best else None!r}")
+                    f"mejor={(_pauta_datos(best).get('NOMBRE_PAUTA') or _pauta_datos(best).get('nombre_pauta')) if best else None!r}")
 
                 # Umbrales de decisión:
                 #   FB            : score >= 1.5 (coincidencia semántica título/productos/imagen)
@@ -278,11 +292,12 @@ async def _procesar_y_enviar(data: dict) -> None:
                         usar_pauta = best_score >= 1.0 and (best_score - second_score) >= 0.5
 
                 if usar_pauta and best:
-                    matched_msg = best.get("MENSAJE") or best.get("mensaje") or best.get("message") or ""
+                    _bd = _pauta_datos(best)
+                    matched_msg = _bd.get("MENSAJE") or _bd.get("mensaje") or _bd.get("message") or ""
                     if matched_msg:
                         procesado.setdefault("analisis", {})["pauta_detectada"] = best
                         procesado.setdefault("analisis", {})["mensaje_pauta"] = matched_msg
-                        tipo_pauta = str(best.get("TIPO") or best.get("tipo") or "").lower()
+                        tipo_pauta = str(_bd.get("TIPO") or _bd.get("tipo") or "").lower()
                         if "negocio" in tipo_pauta or "afili" in tipo_pauta:
                             intencion = {"intencion": "negocio", "confianza": 0.95, "productos_mencionados": []}
                         elif "product" in tipo_pauta or "producto" in tipo_pauta:
@@ -292,7 +307,7 @@ async def _procesar_y_enviar(data: dict) -> None:
                             if alt_int:
                                 intencion = alt_int
                         await bot_log(instancia, "info", "Pautas",
-                            f"pauta_USADA nombre={best.get('NOMBRE_PAUTA') or best.get('nombre_pauta')!r} "
+                            f"pauta_USADA nombre={_bd.get('NOMBRE_PAUTA') or _bd.get('nombre_pauta')!r} "
                             f"score={best_score:.2f} modo={'fb' if es_fb else 'primer_contacto'}")
                 else:
                     await bot_log(instancia, "info", "Pautas",

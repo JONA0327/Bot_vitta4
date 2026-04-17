@@ -368,9 +368,19 @@ async def _crm_get_by_id(module: str, id: Any) -> dict | None:
 
 
 def _pick_field(rec: dict, keys: List[str]) -> Optional[Any]:
+    """Extract a field from a CatalogRecord, automatically unwrapping the 'datos' layer."""
+    # CatalogRecord API responses nest all field values inside a 'datos' dict
+    datos: dict = rec
+    if isinstance(rec.get("datos"), dict):
+        datos = rec["datos"]
     for k in keys:
-        if k in rec and rec[k] not in (None, ""):
-            return rec[k]
+        if k in datos and datos[k] not in (None, ""):
+            return datos[k]
+    # Fallback: top-level (for non-CatalogRecord dicts)
+    if datos is not rec:
+        for k in keys:
+            if k in rec and rec[k] not in (None, ""):
+                return rec[k]
     return None
 
 
