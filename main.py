@@ -260,6 +260,8 @@ async def _procesar_y_enviar(data: dict) -> None:
     flujo = "negocio/genérico" if es_flujo_negocio_puro else "productos"
     from bot_productos import _contar_turnos_bot, PASO3_SIGNAL
     _turnos_bot = _contar_turnos_bot(historial_texto)
+    _respuesta_pauta_directa: str | None = None
+    _medios_pauta_directa: list | None = None
     _MARKER_PASO3 = "Estoy examinando tu situación"
     if not historial_texto.strip() or _turnos_bot == 0:
         paso_flujo = "PASO1"
@@ -343,12 +345,51 @@ async def _procesar_y_enviar(data: dict) -> None:
                         await bot_log(instancia, "info", "Pautas",
                             f"pauta_USADA nombre={_bd.get('NOMBRE_PAUTA') or _bd.get('nombre_pauta')!r} "
                             f"score={best_score:.2f} modo={'fb' if es_fb else 'primer_contacto'}")
+                        # Marcar la respuesta directa de la pauta para enviarla sin LLM
+                        pauta_imagen = _bd.get("IMAGEN_PAUTA") or _bd.get("imagen_pauta") or _bd.get("imagen") or ""
+                        _respuesta_pauta_directa = matched_msg
+                        _medios_pauta_directa = [{"tipo": "imagen", "url": pauta_imagen, "caption": matched_msg}] if pauta_imagen else None
                 else:
+                    _respuesta_pauta_directa = None
+                    _medios_pauta_directa = None
                     await bot_log(instancia, "info", "Pautas",
                         f"no_match_con_pautas count={len(pautas)} best_score={best_score:.2f} "
                         f"second_score={second_score:.2f} es_fb={bool(es_fb)}")
     except Exception as e:
         await bot_log(instancia, "error", "Pautas", f"Error checando pautas: {e}")
+
+    # ── Si hay respuesta directa de pauta, enviarla y terminar ───────────────
+    if _respuesta_pauta_directa:
+        await bot_log(instancia, "info", "Bot", f"respuesta PAUTA directa ({len(_respuesta_pauta_directa)} chars) tel={telefono}")
+
+        async def _enviar_pauta(texto: str, user_msg: str = "", medios: list | None = None) -> None:
+            if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN):
+                await bot_log(instancia, "warning", "BotSend", "CRM no configurado — respuesta no enviada")
+                return
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    payload: dict = {
+                        "telefono":     telefono,
+                        "remote_jid":   remote_jid,
+                        "instancia":    instancia,
+                        "respuesta":    texto,
+                        "user_message": user_msg,
+                    }
+                    if medios:
+                        payload["medios"] = medios
+                    resp = await client.post(
+                        f"{CRM_URL}/api/v1/{CRM_TENANT}/bot-send",
+                        headers={"X-API-Key": CRM_API_TOKEN, "Content-Type": "application/json"},
+                        json=payload,
+                    )
+                    if resp.status_code not in (200, 201):
+                        await bot_log(instancia, "error", "BotSend",
+                            f"bot-send retornó {resp.status_code}: {resp.text[:200]}")
+            except Exception as exc:
+                await bot_log(instancia, "error", "BotSend", f"Error en bot-send: {exc}")
+
+        await _enviar_pauta(_respuesta_pauta_directa, procesado.get("etiqueta", mensaje[:120]), medios=_medios_pauta_directa)
+        return
 
     resultado = None
     if not es_flujo_negocio_puro:

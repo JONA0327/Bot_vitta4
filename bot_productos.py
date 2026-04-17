@@ -394,6 +394,209 @@ def _is_disponible(p: dict) -> bool:
     return str(val).strip().lower() in ("1", "true", "si", "sí", "disponible", "activo", "available")
 
 
+async def _obtener_todos_testimonios(per_page: int = 100) -> list:
+    """Obtiene todos los testimonios sin filtro de búsqueda."""
+    res = await _crm_get("testimonios", {"per_page": per_page})
+    if not res:
+        return []
+    data = res.get("data") if isinstance(res, dict) and res.get("data") is not None else res
+    return data or []
+
+
+async def _obtener_todos_paquetes(per_page: int = 100) -> list:
+    """Obtiene todos los paquetes sin filtro de búsqueda."""
+    res = await _crm_get("paquetes", {"per_page": per_page})
+    if not res:
+        return []
+    data = res.get("data") if isinstance(res, dict) and res.get("data") is not None else res
+    return data or []
+
+
+async def _obtener_todos_productos(per_page: int = 100) -> list:
+    """Obtiene todos los productos sin filtro de búsqueda."""
+    res = await _crm_get("productos", {"per_page": per_page})
+    if not res:
+        return []
+    data = res.get("data") if isinstance(res, dict) and res.get("data") is not None else res
+    return data or []
+
+
+async def _ia_elegir_testimonio(
+    testimonios: list,
+    condicion: str,
+    sintomas: list,
+    causas: list,
+) -> dict | None:
+    """Usa IA para determinar cuál testimonio/condición crónica coincide mejor con
+    los síntomas y causas del paciente. Retorna el testimonio elegido o None."""
+    if not testimonios or not OPENAI_API_KEY:
+        return None
+
+    # Construir resumen de testimonios para el prompt
+    lines = []
+    for i, t in enumerate(testimonios):
+        cond = _pick_field(t, ["CONDICION_CRONICA", "condicion_cronica", "condicion", "CONDICION"]) or ""
+        desc = _pick_field(t, ["DESCRIPCION", "descripcion", "description"]) or ""
+        lines.append(f"[{i}] Condición: {cond}\nDescripción: {desc[:300]}")
+
+    testimonio_txt = "\n---\n".join(lines)
+    sintomas_txt = ", ".join(sintomas) if sintomas else "no especificados"
+    causas_txt = ", ".join(causas) if causas else "no especificadas"
+
+    prompt = (
+        f"Un paciente tiene la siguiente situación:\n"
+        f"- Condición principal: {condicion}\n"
+        f"- Síntomas: {sintomas_txt}\n"
+        f"- Posibles causas: {causas_txt}\n\n"
+        f"Tienes estos registros de condiciones crónicas disponibles:\n{testimonio_txt}\n\n"
+        "Responde ÚNICAMENTE con el número entre corchetes del registro más relevante para este paciente, "
+        "o -1 si ninguno es relevante. Solo el número, sin explicación. Ejemplo: 0"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0,
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+            idx = int(re.search(r"-?\d+", raw).group())
+            if 0 <= idx < len(testimonios):
+                chosen = testimonios[idx]
+                cond_log = _pick_field(chosen, ["CONDICION_CRONICA", "condicion_cronica", "condicion", "CONDICION"]) or ""
+                print(f"[CRMCAT] IA eligió testimonio idx={idx} condicion='{cond_log}'")
+                return chosen
+    except Exception as e:
+        print(f"[CRMCAT] error en _ia_elegir_testimonio: {e}")
+    return None
+
+
+async def _ia_elegir_paquete(
+    paquetes: list,
+    condicion: str,
+    sintomas: list,
+    causas: list,
+    sugeridos_ids: list,
+) -> dict | None:
+    """Usa IA para determinar cuál paquete contiene los productos sugeridos
+    y es más relevante para la condición del paciente."""
+    if not paquetes or not OPENAI_API_KEY:
+        return None
+
+    # Primero: filtrar paquetes que contienen al menos uno de los IDs sugeridos
+    if sugeridos_ids:
+        candidatos = []
+        for p in paquetes:
+            pf = _pick_field(p, ["PRODUCTOS", "productos", "productos_ids", "productos_sugeridos"]) or ""
+            paq_ids = set(_extract_ids_from_field(pf))
+            if paq_ids.intersection(set(sugeridos_ids)):
+                candidatos.append(p)
+        if candidatos:
+            # Si solo hay uno, retornarlo directamente
+            if len(candidatos) == 1:
+                nombre = _pick_field(candidatos[0], ["NOMBRE_PAQUETE", "nombre_paquete", "NOMBRE", "nombre"]) or ""
+                print(f"[CRMCAT] paquete directo por IDs: '{nombre}'")
+                return candidatos[0]
+            paquetes = candidatos  # reducir al subconjunto relevante
+
+    lines = []
+    for i, p in enumerate(paquetes):
+        nombre = _pick_field(p, ["NOMBRE_PAQUETE", "nombre_paquete", "NOMBRE", "nombre"]) or ""
+        desc = _pick_field(p, ["DESCRIPCION", "descripcion", "description"]) or ""
+        prods_field = _pick_field(p, ["PRODUCTOS", "productos", "productos_ids"]) or ""
+        lines.append(f"[{i}] Paquete: {nombre}\nDescripción: {desc[:200]}\nProductos IDs: {prods_field}")
+
+    paquetes_txt = "\n---\n".join(lines)
+    sintomas_txt = ", ".join(sintomas) if sintomas else "no especificados"
+
+    prompt = (
+        f"Un paciente con {condicion} (síntomas: {sintomas_txt}) necesita suplementos.\n"
+        f"Estos son los paquetes disponibles:\n{paquetes_txt}\n\n"
+        "Responde ÚNICAMENTE con el número entre corchetes del paquete más adecuado, "
+        "o -1 si ninguno aplica. Solo el número. Ejemplo: 0"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0,
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+            idx = int(re.search(r"-?\d+", raw).group())
+            if 0 <= idx < len(paquetes):
+                nombre = _pick_field(paquetes[idx], ["NOMBRE_PAQUETE", "nombre_paquete", "NOMBRE", "nombre"]) or ""
+                print(f"[CRMCAT] IA eligió paquete idx={idx} nombre='{nombre}'")
+                return paquetes[idx]
+    except Exception as e:
+        print(f"[CRMCAT] error en _ia_elegir_paquete: {e}")
+    return None
+
+
+async def _ia_elegir_productos(
+    productos: list,
+    condicion: str,
+    sintomas: list,
+) -> list:
+    """Usa IA para filtrar y ordenar los productos más relevantes (solo disponibles)."""
+    disponibles = [p for p in productos if _is_disponible(p)]
+    if not disponibles or not OPENAI_API_KEY:
+        return disponibles[:5]
+
+    if len(disponibles) <= 3:
+        return disponibles
+
+    lines = []
+    for i, p in enumerate(disponibles):
+        nombre = _pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
+        desc = _pick_field(p, ["DESCRIPCION", "descripcion", "description"]) or ""
+        lines.append(f"[{i}] {nombre}: {desc[:150]}")
+
+    productos_txt = "\n".join(lines)
+    sintomas_txt = ", ".join(sintomas) if sintomas else condicion
+
+    prompt = (
+        f"Paciente con {condicion} (síntomas: {sintomas_txt}).\n"
+        f"Productos disponibles:\n{productos_txt}\n\n"
+        "Lista los índices de los 1-3 productos más relevantes separados por coma. Solo índices. Ejemplo: 0,2"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0,
+                    "max_tokens": 20,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+            indices = [int(x.strip()) for x in re.findall(r"\d+", raw) if 0 <= int(x.strip()) < len(disponibles)]
+            if indices:
+                return [disponibles[i] for i in indices]
+    except Exception as e:
+        print(f"[CRMCAT] error en _ia_elegir_productos: {e}")
+    return disponibles[:3]
+
+
 async def _buscar_testimonios_por_condicion(query: str) -> list:
     res = await _crm_get("testimonios", {"search": query, "per_page": 10})
     if not res:
@@ -459,47 +662,24 @@ async def _buscar_en_catalogos(
     causas_posibles: list | None = None,
     sintomas: list | None = None,
 ) -> tuple[list, dict | None]:
-    """Busca productos en testimonios (condicion_cronica) → paquetes → productos.
+    """Busca productos usando IA para analizar catálogos completos.
 
     Lógica:
-    1. Busca en testimonios usando condicion_detectada y causas_posibles como términos
-       (más precisos que terminos_busqueda genérico). Analiza la descripción del
-       testimonio para verificar relevancia con las causas.
-    2. Obtiene los IDs de productos_sugeridos del testimonio encontrado.
-    3. Busca paquetes que CONTENGAN esos IDs de productos. Si encuentra uno, usa los
-       productos del paquete (solo los disponibles) y retorna el paquete como contexto.
-    4. Si no hay paquete, usa los productos individuales (solo los disponibles).
-    5. Si no hubo coincidencia en testimonios, busca paquetes y productos por query.
+    1. Obtiene TODOS los testimonios (sin filtro) y usa IA para elegir el más relevante
+       según condición, síntomas y causas del paciente.
+    2. Obtiene los productos_sugeridos del testimonio elegido.
+    3. Obtiene TODOS los paquetes (sin filtro) y usa IA para elegir el que contiene
+       los productos sugeridos y mejor aplica a la condición.
+    4. Si hay paquete: usa los productos del paquete (solo disponibles).
+    5. Si no hay paquete: usa los productos individuales (solo disponibles).
+    6. Fallback: obtiene todos los productos y usa IA para filtrar los más relevantes.
 
     Retorna: (lista_productos, paquete_info_o_None)
     """
     causas_posibles = causas_posibles or []
     sintomas = sintomas or []
 
-    # ── Candidatos de búsqueda para testimonios (condicion_cronica) ──────────
-    # Usar términos específicos: condicion + causas (no el string genérico de terminos_busqueda)
-    cond_candidates: list[str] = []
-    if condicion_detectada:
-        cond_candidates.append(condicion_detectada)
-    for causa in causas_posibles[:3]:
-        if causa and causa not in cond_candidates:
-            cond_candidates.append(causa)
-    for sint in sintomas[:2]:
-        if sint and sint not in cond_candidates:
-            cond_candidates.append(sint)
-    if not cond_candidates and terminos_busqueda:
-        cond_candidates.append(terminos_busqueda)
-
-    # ── Query general para paquetes/productos (fallback) ─────────────────────
-    query_parts: list[str] = []
-    if terminos_busqueda:
-        query_parts.append(terminos_busqueda)
-    elif condicion_detectada:
-        query_parts.append(condicion_detectada)
-    if analisis.get("resumen_para_bot"):
-        query_parts.append(analisis.get("resumen_para_bot"))
-
-    # Extraer nombres de productos del historial/contexto
+    # Extraer nombres de productos del historial/contexto (para FB)
     productos_hist: list[str] = list(intencion.get("productos_mencionados") or [])
     if isinstance(analisis.get("items"), list):
         for p in analisis["items"]:
@@ -513,126 +693,87 @@ async def _buscar_en_catalogos(
             m_titulo = re.search(r"Titulo anuncio:\s*(.+)", historial_texto, re.IGNORECASE)
             if m_titulo:
                 productos_hist = [m_titulo.group(1).strip()]
-        if not productos_hist:
-            m_anuncio = re.search(r"Texto anuncio:\s*\"?(.{10,120})", historial_texto, re.IGNORECASE)
-            if m_anuncio:
-                query_parts.append(m_anuncio.group(1).strip().rstrip('"'))
-    if productos_hist:
-        query_parts.append(" ".join(productos_hist))
 
-    query_fallback = " ".join(p for p in query_parts if p)[:800]
-    print(f"[CRMCAT] buscar_en_catalogos cond_candidates={cond_candidates} query_fallback={repr(query_fallback)[:120]} productos_hist={productos_hist} intencion_products={intencion.get('productos_mencionados')}")
-
-    # ── 1) Buscar en testimonios (condicion_cronica) ──────────────────────────
-    # Intentar cada candidato de condición/causa hasta encontrar un testimonio relevante
-    chosen = None
-    all_check_terms = [condicion_detectada] + causas_posibles + sintomas
-
-    for term in cond_candidates:
-        try:
-            tests = await _buscar_testimonios_por_condicion(term)
-            print(f"[CRMCAT] testimonios search='{term}' -> {len(tests) if tests else 0}")
-        except Exception as e:
-            print(f"[CRMCAT] error buscando testimonios term='{term}': {e}")
-            tests = []
-        if not tests:
-            continue
-        for t in tests:
-            condicion_t = _pick_field(t, ["CONDICION_CRONICA", "condicion_cronica", "condicion", "CONDICION", "condicion_cronica_text"]) or ""
-            descripcion_t = _pick_field(t, ["DESCRIPCION", "descripcion", "description"]) or ""
-            # Relevancia: algún término de condición/causas/síntomas aparece en el testimonio
-            es_relevante = any(
-                ct and (ct.lower() in descripcion_t.lower() or ct.lower() in condicion_t.lower()
-                        or condicion_t.lower() in ct.lower())
-                for ct in all_check_terms if ct
-            ) or (term.lower() in condicion_t.lower() or condicion_t.lower() in term.lower())
-            if es_relevante:
-                chosen = t
-                break
-        if not chosen and tests:
-            chosen = tests[0]  # fallback: primer resultado
-        if chosen:
-            break
+    print(f"[CRMCAT] buscar_en_catalogos condicion='{condicion_detectada}' sintomas={sintomas} causas={causas_posibles} productos_hist={productos_hist}")
 
     product_records: list = []
     paquete_info: dict | None = None
 
+    # ── 1) Obtener TODOS los testimonios y elegir con IA ─────────────────────
+    try:
+        todos_testimonios = await _obtener_todos_testimonios()
+        print(f"[CRMCAT] total testimonios={len(todos_testimonios)}")
+    except Exception as e:
+        print(f"[CRMCAT] error obteniendo testimonios: {e}")
+        todos_testimonios = []
+
+    chosen = None
+    if todos_testimonios and condicion_detectada:
+        chosen = await _ia_elegir_testimonio(
+            todos_testimonios,
+            condicion=condicion_detectada,
+            sintomas=sintomas,
+            causas=causas_posibles,
+        )
+
     if chosen:
-        condicion_log = _pick_field(chosen, ["CONDICION_CRONICA", "condicion_cronica", "condicion", "CONDICION"]) or ""
-        print(f"[CRMCAT] testimonio elegido condicion='{condicion_log}'")
         sugeridos = _pick_field(chosen, ["PRODUCTOS_SUGERIDOS", "productos_sugeridos", "productos", "PRODUCTOS"])
         sugeridos_ids: list[int] = _extract_ids_from_field(sugeridos)
         print(f"[CRMCAT] productos_sugeridos ids={sugeridos_ids}")
 
         if sugeridos_ids:
-            # Obtener los productos sugeridos para conocer sus nombres
             suggested_prods = await _obtener_productos_por_ids(sugeridos_ids)
 
-            # ── 2) Buscar paquetes que CONTENGAN los productos sugeridos ──────
-            # (búsqueda por términos de condición; luego verificar por IDs)
+            # ── 2) Obtener TODOS los paquetes y elegir con IA ─────────────────
+            try:
+                todos_paquetes = await _obtener_todos_paquetes()
+                print(f"[CRMCAT] total paquetes={len(todos_paquetes)}")
+            except Exception as e:
+                print(f"[CRMCAT] error obteniendo paquetes: {e}")
+                todos_paquetes = []
+
             paquete_encontrado: dict | None = None
-            for search_term in cond_candidates + ([query_fallback] if query_fallback else []):
-                if not search_term:
-                    continue
-                try:
-                    paquetes_res = await _buscar_paquetes_por_query(search_term)
-                    print(f"[CRMCAT] paquetes search='{search_term[:60]}' -> {len(paquetes_res) if paquetes_res else 0}")
-                except Exception as e:
-                    print(f"[CRMCAT] error buscando paquetes: {e}")
-                    paquetes_res = []
-                for paquete in (paquetes_res or []):
-                    paq_prod_field = _pick_field(paquete, ["PRODUCTOS", "productos", "productos_ids", "productos_sugeridos"]) or ""
-                    paq_prod_ids = set(_extract_ids_from_field(paq_prod_field))
-                    # El paquete debe contener al menos uno de los productos sugeridos
-                    if paq_prod_ids.intersection(set(sugeridos_ids)):
-                        paquete_encontrado = paquete
-                        break
-                if paquete_encontrado:
-                    break
+            if todos_paquetes:
+                paquete_encontrado = await _ia_elegir_paquete(
+                    todos_paquetes,
+                    condicion=condicion_detectada,
+                    sintomas=sintomas,
+                    causas=causas_posibles,
+                    sugeridos_ids=sugeridos_ids,
+                )
 
             if paquete_encontrado:
                 paq_prod_field = _pick_field(paquete_encontrado, ["PRODUCTOS", "productos", "productos_ids", "productos_sugeridos"]) or ""
                 paq_prod_ids = _extract_ids_from_field(paq_prod_field)
                 prods = await _obtener_productos_por_ids(paq_prod_ids)
                 prods_disp = [p for p in prods if _is_disponible(p)]
-                print(f"[CRMCAT] paquete encontrado → {len(prods_disp)} productos disponibles")
+                print(f"[CRMCAT] paquete IA → {len(prods_disp)} productos disponibles")
                 product_records.extend(prods_disp)
                 paquete_info = paquete_encontrado
             else:
-                # ── 3) Sin paquete: usar productos individuales (solo disponibles) ──
                 prods_disp = [p for p in suggested_prods if _is_disponible(p)]
                 print(f"[CRMCAT] sin paquete → {len(prods_disp)} productos individuales disponibles")
                 product_records.extend(prods_disp)
 
-    # ── 4) Fallback: buscar paquetes por query general ────────────────────────
-    if not product_records and query_fallback:
+    # ── 3) Fallback: obtener TODOS los productos y elegir con IA ─────────────
+    if not product_records:
         try:
-            paquetes = await _buscar_paquetes_por_query(query_fallback)
-            print(f"[CRMCAT] fallback paquetes -> {len(paquetes) if paquetes else 0}")
-        except Exception:
-            paquetes = []
-        if paquetes:
-            paquete = paquetes[0]
-            prod_field = _pick_field(paquete, ["PRODUCTOS", "productos", "productos_ids"]) or ""
-            prod_ids = _extract_ids_from_field(prod_field)
-            if prod_ids:
-                prods = await _obtener_productos_por_ids(prod_ids)
-                prods_disp = [p for p in prods if _is_disponible(p)]
-                product_records.extend(prods_disp)
-                paquete_info = paquete
+            todos_productos = await _obtener_todos_productos()
+            print(f"[CRMCAT] fallback IA sobre {len(todos_productos)} productos")
+        except Exception as e:
+            print(f"[CRMCAT] error obteniendo productos: {e}")
+            todos_productos = []
 
-    # ── 5) Fallback: buscar directamente en productos por query general ───────
-    if not product_records and query_fallback:
-        try:
-            productos = await _buscar_productos_por_query(query_fallback, per_page=12)
-            print(f"[CRMCAT] fallback productos -> {len(productos) if productos else 0}")
-        except Exception:
-            productos = []
-        if productos:
-            disp = [p for p in productos if _is_disponible(p)]
-            product_records.extend(disp)
+        if todos_productos and condicion_detectada:
+            product_records = await _ia_elegir_productos(
+                todos_productos,
+                condicion=condicion_detectada,
+                sintomas=sintomas,
+            )
+        elif todos_productos:
+            product_records = [p for p in todos_productos if _is_disponible(p)][:3]
 
-    # ── 6) Filtrar por productos mencionados en publicación FB (si aplica) ────
+    # ── 4) Filtrar por productos mencionados en publicación FB (si aplica) ────
     items_fb = list(analisis.get("items") or []) if isinstance(analisis.get("items"), list) else []
     filtro_nombres = [p.lower() for p in productos_hist if p] + [p.lower() for p in items_fb if p]
     seen: set = set()
