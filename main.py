@@ -82,7 +82,7 @@ async def _buscar_pautas_activas(instancia: str = "") -> list:
                 break
         if v is None:
             v = ""
-        return v in ("activo", "true", "1", "si", "sí", "enabled")
+        return v in ("activo", "activa", "true", "1", "si", "sí", "enabled")
 
     return [r for r in (records or []) if _activo(r)]
 
