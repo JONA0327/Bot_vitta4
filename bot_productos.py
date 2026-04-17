@@ -424,6 +424,31 @@ def _pick_imagen(p: dict) -> str:
     return ""
 
 
+def _pick_video(p: dict) -> str:
+    """Busca la URL de video de un producto en todos sus campos."""
+    known = _pick_field(p, [
+        "VIDEO", "video", "VIDEO_URL", "video_url", "URL_VIDEO", "url_video",
+        "VIDEO_LINK", "video_link", "LINK_VIDEO", "link_video",
+        "VIDEO_PRODUCTO", "video_producto",
+    ])
+    if known:
+        return str(known)
+    # Escanear todos los campos buscando URLs de video
+    datos = p.get("datos") if isinstance(p.get("datos"), dict) else p
+    _VID_EXTS = ('.mp4', '.mov', '.avi', '.webm', '.mkv')
+    _VID_DOMAINS = ('youtube.com', 'youtu.be', 'vimeo.com', 'drive.google.com')
+    for k, v in datos.items():
+        if not v:
+            continue
+        sv = str(v)
+        sv_lower = sv.lower()
+        if any(sv_lower.endswith(ext) or (ext + '?') in sv_lower for ext in _VID_EXTS):
+            return sv
+        if sv.startswith('http') and any(d in sv_lower for d in _VID_DOMAINS):
+            return sv
+    return ""
+
+
 async def _obtener_todos_testimonios(per_page: int = 100) -> list:
     """Obtiene todos los testimonios sin filtro de búsqueda."""
     res = await _crm_get("testimonios", {"per_page": per_page})
@@ -1196,32 +1221,43 @@ async def responder_productos(
             if last_bots:
                 last_bot = last_bots[-1]
                 bot_asked_video = bool(re.search(r"video|vídeo|ver un video|videos relacionados|video relacionado", last_bot, re.IGNORECASE))
-                user_yes = bool(re.search(r"^\s*(si|sí|s)(\b|\W)|si por favor|sí por favor|si,|sí,", texto_usuario.lower()))
+                user_yes = bool(re.search(r"^\s*(si|sí|s)(\b|\W)|si por favor|sí por favor|si,|sí,|claro|dale|mándalo|envialo|envíalo", texto_usuario.strip().lower()))
                 if bot_asked_video and user_yes:
-                    # Extraer nombres de productos listados en el último mensaje del bot
                     medios = []
-                    prod_names = []
-                    m = re.search(r"\[([^\]]+)\]", last_bot)
-                    if m:
-                        prod_names = [p.strip() for p in m.group(1).split(",") if p.strip()]
-                    else:
-                        # fallback: palabras con mayúsculas que parezcan nombres
-                        tokens = re.findall(r"[A-Z][a-zA-Z0-9\-]{2,}(?:\s+[A-Z][a-zA-Z0-9\-]{2,})*", last_bot)
-                        prod_names = tokens[:5]
 
-                    for name in prod_names:
-                        prods = await _buscar_productos_por_query(name, per_page=1)
-                        if prods:
-                            p = prods[0]
-                            # posibles campos de video
-                            video_url = _pick_field(p, ["VIDEO", "video", "video_url", "url_video", "video_link"]) or p.get("video")
-                            if video_url:
-                                medios.append({"tipo": "video", "url": video_url, "caption": f"Video: {name}"})
+                    # Buscar marcador estructurado [[PRODUCTOS:nombre1|nombre2]] insertado por PASO4
+                    marker_match = re.search(r"\[\[PRODUCTOS:([^\]]+)\]\]", historial_texto)
+                    if marker_match:
+                        prod_names = [n.strip() for n in marker_match.group(1).split("|") if n.strip()]
+                    else:
+                        # Fallback: extraer nombres entre corchetes del último mensaje del bot
+                        m = re.search(r"\[([^\[\]]{3,120})\]", last_bot)
+                        if m:
+                            prod_names = [p.strip() for p in m.group(1).split(",") if p.strip()]
+                        else:
+                            prod_names = []
+
+                    if prod_names:
+                        # Obtener todos los productos UNA VEZ y buscar por nombre
+                        todos = await _obtener_todos_productos()
+                        for name in prod_names:
+                            name_lower = name.lower()
+                            # Buscar el producto cuyo nombre coincida (exacto o contenido)
+                            match_prod = None
+                            for p in todos:
+                                pnombre = (_pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or "").lower()
+                                if pnombre == name_lower or name_lower in pnombre or pnombre in name_lower:
+                                    match_prod = p
+                                    break
+                            if match_prod:
+                                video_url = _pick_video(match_prod)
+                                if video_url:
+                                    medios.append({"tipo": "video", "url": video_url, "caption": name})
 
                     if medios:
-                        return {"texto": "Perfecto — te envío los videos relacionados a los productos recomendados.", "medios": medios}
+                        return {"texto": "Aquí tienes los videos de los productos recomendados 🎥", "medios": medios}
                     else:
-                        return "No encontré videos disponibles para esos productos. ¿Deseas que te mande más información escrita?"
+                        return "No encontré videos disponibles para esos productos en este momento."
     except Exception:
         pass
 
@@ -1319,7 +1355,7 @@ async def responder_productos(
         for p in productos_catalogo[:6]:
             nombre = _pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or p.get("nombre") or ""
             descripcion = _pick_field(p, ["DESCRIPCION", "descripcion", "description"]) or p.get("descripcion") or ""
-            video = _pick_field(p, ["VIDEO", "video", "video_url", "url_video", "video_link"]) or p.get("video") or ""
+            video = _pick_video(p)
             imagen = _pick_imagen(p)
             partes_prod.append(f"Nombre: {nombre}\nDescripción: {descripcion}\nVideo: {video}")
             if imagen:
@@ -1365,6 +1401,16 @@ async def responder_productos(
                 # Asegurar la pregunta de video al final si no la incluyó
                 if not re.search(r"video|vídeo", recomendacion, re.IGNORECASE):
                     recomendacion += "\n\n¿Deseas ver un video relacionado a los productos recomendados? Responde 'sí' para recibir los videos."
+                # Insertar marcador oculto con los nombres de los productos para que
+                # el siguiente turno (respuesta "sí") pueda encontrar sus videos.
+                nombres_recomendados = []
+                for p in productos_catalogo[:6]:
+                    n = _pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
+                    if n:
+                        nombres_recomendados.append(n)
+                if nombres_recomendados:
+                    marker = "[[PRODUCTOS:" + "|".join(nombres_recomendados) + "]]"
+                    recomendacion = recomendacion + "\n" + marker
                 # Devolver texto + imágenes de productos
                 if medios_imagenes:
                     return {"texto": recomendacion, "medios": medios_imagenes}
