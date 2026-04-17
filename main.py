@@ -403,6 +403,7 @@ async def _procesar_y_enviar(data: dict) -> None:
 
     respuesta: str | None = None
     medios = None
+    mensagens_multi: list | None = None
     if isinstance(resultado, dict):
         # Si el bot indica que no hay productos en catálogo → pausar sin responder
         if resultado.get("pausar"):
@@ -437,10 +438,11 @@ async def _procesar_y_enviar(data: dict) -> None:
             return
         respuesta = resultado.get("texto")
         medios = resultado.get("medios")
+        mensagens_multi = resultado.get("mensagens")
     else:
         respuesta = resultado
 
-    if not respuesta and not medios:
+    if not respuesta and not medios and not mensagens_multi:
         respuesta = RESPUESTA_PRUEBA
         await bot_log(instancia, "warning", "vitta4", f"usando respuesta genérica tel={telefono}")
 
@@ -497,6 +499,16 @@ async def _procesar_y_enviar(data: dict) -> None:
         except Exception as exc:
             await bot_log(instancia, "error", "BotSend", f"Error en bot-send: {exc}")
 
+    if mensagens_multi:
+        # Multi-message PASO4: enviar cada producto como mensaje separado
+        etiqueta = procesado.get("etiqueta", mensaje[:120])
+        for msg in mensagens_multi:
+            txt = msg.get("texto") or ""
+            mds = msg.get("medios") or None
+            if txt or mds:
+                await _enviar(txt, etiqueta, medios=mds)
+        return
+
     await _enviar(respuesta, procesado.get("etiqueta", mensaje[:120]), medios=medios)
 
     if paso3_listo:
@@ -517,12 +529,21 @@ async def _procesar_y_enviar(data: dict) -> None:
                 )
             respuesta2 = None
             medios2 = None
+            mensagens2 = None
             if isinstance(resultado2, dict):
+                mensagens2 = resultado2.get("mensagens")
                 respuesta2 = resultado2.get("texto")
                 medios2 = resultado2.get("medios")
             else:
                 respuesta2 = resultado2
-            if respuesta2:
+            if mensagens2:
+                etiqueta2 = procesado.get("etiqueta", mensaje[:120])
+                for msg in mensagens2:
+                    txt = msg.get("texto") or ""
+                    mds = msg.get("medios") or None
+                    if txt or mds:
+                        await _enviar(txt, etiqueta2, medios=mds)
+            elif respuesta2:
                 await bot_log(instancia, "info", "Bot", f"respuesta PASO4 generada ({len(respuesta2)} chars) tel={telefono}")
                 await _enviar(respuesta2, procesado.get("etiqueta", mensaje[:120]), medios=medios2)
         except Exception as e:

@@ -672,7 +672,7 @@ async def _ia_elegir_productos(
             indices = [int(x.strip()) for x in re.findall(r"\d+", raw) if 0 <= int(x.strip()) < len(disponibles)]
             if indices:
                 seleccionados = [disponibles[i] for i in indices]
-                nombres = [_pick_field(p, ["PRODUCTO","producto","NOMBRE","nombre","title"]) or "?" for p in seleccionados]
+                nombres = [str(_pick_field(p, ["PRODUCTO","producto","NOMBRE","nombre","title"]) or "?") for p in seleccionados]
                 print(f"[CRMCAT] IA seleccionó {len(seleccionados)} productos: {nombres} para condición='{condicion}'")
                 return seleccionados
     except Exception as e:
@@ -889,7 +889,7 @@ async def _buscar_en_catalogos(
         filtered = [
             pr for pr in product_records
             if any(
-                fb in (_pick_field(pr, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or "").lower()
+                fb in str(_pick_field(pr, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or "").lower()
                 for fb in filtro_unico
             )
         ]
@@ -1217,49 +1217,61 @@ async def responder_productos(
     # --- Manejo: si la conversación previa preguntó por videos y el usuario responde afirmativamente
     try:
         if historial_texto and texto_usuario:
-            last_bots = re.findall(r"Bot:\s*(.+)", historial_texto)
-            if last_bots:
-                last_bot = last_bots[-1]
-                bot_asked_video = bool(re.search(r"video|vídeo|ver un video|videos relacionados|video relacionado", last_bot, re.IGNORECASE))
-                user_yes = bool(re.search(r"^\s*(si|sí|s)(\b|\W)|si por favor|sí por favor|si,|sí,|claro|dale|mándalo|envialo|envíalo", texto_usuario.strip().lower()))
-                if bot_asked_video and user_yes:
+            # Detectar si el usuario dice "sí" a los videos
+            user_yes = bool(re.search(
+                r"^\s*(si|sí|s)(\b|\W)|si por favor|sí por favor|si,|sí,|claro|dale|mándalo|envialo|envíalo",
+                texto_usuario.strip().lower()
+            ))
+            if user_yes:
+                # PRIMARIO: buscar marcador [[PRODUTOS_IDS:id1|id2]] (insertado por PASO4)
+                ids_marker = re.search(r"\[\[PRODUTOS_IDS:([^\]]+)\]\]", historial_texto)
+                # SECUNDARIO: revisar el último mensaje COMPLETO del bot (DOTALL) en busca de "video"
+                all_bot_msgs = re.findall(r"Bot:\s*(.*?)(?=\nUsuario:|\Z)", historial_texto, re.DOTALL)
+                last_bot_full = (all_bot_msgs[-1] if all_bot_msgs else "").strip()
+                bot_asked_video = bool(ids_marker) or bool(
+                    re.search(r"video|vídeo", last_bot_full, re.IGNORECASE)
+                )
+                if bot_asked_video:
                     medios = []
-
-                    # Buscar marcador estructurado [[PRODUCTOS:nombre1|nombre2]] insertado por PASO4
-                    marker_match = re.search(r"\[\[PRODUCTOS:([^\]]+)\]\]", historial_texto)
-                    if marker_match:
-                        prod_names = [n.strip() for n in marker_match.group(1).split("|") if n.strip()]
-                    else:
-                        # Fallback: extraer nombres entre corchetes del último mensaje del bot
-                        m = re.search(r"\[([^\[\]]{3,120})\]", last_bot)
-                        if m:
-                            prod_names = [p.strip() for p in m.group(1).split(",") if p.strip()]
-                        else:
-                            prod_names = []
-
-                    if prod_names:
-                        # Obtener todos los productos UNA VEZ y buscar por nombre
-                        todos = await _obtener_todos_productos()
-                        for name in prod_names:
-                            name_lower = name.lower()
-                            # Buscar el producto cuyo nombre coincida (exacto o contenido)
-                            match_prod = None
-                            for p in todos:
-                                pnombre = (_pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or "").lower()
-                                if pnombre == name_lower or name_lower in pnombre or pnombre in name_lower:
-                                    match_prod = p
-                                    break
-                            if match_prod:
-                                video_url = _pick_video(match_prod)
+                    if ids_marker:
+                        # Obtener cada producto por ID vía endpoint individual
+                        prod_ids = [int(x.strip()) for x in ids_marker.group(1).split("|") if x.strip().isdigit()]
+                        for pid in prod_ids:
+                            prod_data = await _crm_get_by_id("productos", pid)
+                            if prod_data:
+                                video_url = _pick_video(prod_data)
+                                nombre = str(_pick_field(prod_data, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or f"Producto {pid}")
                                 if video_url:
-                                    medios.append({"tipo": "video", "url": video_url, "caption": name})
+                                    medios.append({"tipo": "video", "url": video_url, "caption": nombre})
+                    else:
+                        # Fallback: extraer nombres del marcador antiguo o corchetes
+                        name_marker = re.search(r"\[\[PRODUCTOS:([^\]]+)\]\]", historial_texto)
+                        if name_marker:
+                            prod_names = [n.strip() for n in name_marker.group(1).split("|") if n.strip()]
+                        else:
+                            m = re.search(r"\[([^\[\]]{3,120})\]", last_bot_full)
+                            prod_names = [p.strip() for p in m.group(1).split(",") if p.strip()] if m else []
+                        if prod_names:
+                            todos = await _obtener_todos_productos()
+                            for name in prod_names:
+                                name_lower = name.lower()
+                                match_prod = None
+                                for p in todos:
+                                    pnombre = str(_pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or "").lower()
+                                    if pnombre == name_lower or name_lower in pnombre or pnombre in name_lower:
+                                        match_prod = p
+                                        break
+                                if match_prod:
+                                    video_url = _pick_video(match_prod)
+                                    if video_url:
+                                        medios.append({"tipo": "video", "url": video_url, "caption": name})
 
                     if medios:
                         return {"texto": "Aquí tienes los videos de los productos recomendados 🎥", "medios": medios}
                     else:
                         return "No encontré videos disponibles para esos productos en este momento."
-    except Exception:
-        pass
+    except Exception as _ve:
+        print(f"[VideoHandler] error: {_ve}")
 
     # ── PASO 1: Primer contacto (sin historial o sin respuesta previa del bot) ─
     if not historial_texto.strip() or _contar_turnos_bot(historial_texto) == 0:
@@ -1350,30 +1362,35 @@ async def responder_productos(
             if paq_nombre or paq_desc:
                 paquete_ctx = f"\nPaquete recomendado: {paq_nombre}\nDescripción del paquete: {paq_desc}"
 
+        import json as _json
+
         partes_prod = []
-        medios_imagenes: list[dict] = []
+        img_map: dict[str, str] = {}   # nombre_lower → url_imagen
         for p in productos_catalogo[:6]:
-            nombre = _pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or p.get("nombre") or ""
-            descripcion = _pick_field(p, ["DESCRIPCION", "descripcion", "description"]) or p.get("descripcion") or ""
-            video = _pick_video(p)
+            nombre = str(_pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or p.get("nombre") or "")
+            descripcion = str(_pick_field(p, ["DESCRIPCION", "descripcion", "description"]) or p.get("descripcion") or "")
             imagen = _pick_imagen(p)
-            partes_prod.append(f"Nombre: {nombre}\nDescripción: {descripcion}\nVideo: {video}")
-            if imagen:
-                medios_imagenes.append({"tipo": "imagen", "url": imagen, "caption": nombre})
+            partes_prod.append(f"Nombre: {nombre}\nDescripción: {descripcion}")
+            if nombre and imagen:
+                img_map[nombre.lower()] = imagen
+
+        # Marcador IDs para recuperar videos en el siguiente turno
+        ids_str = "|".join(str(p.get("id", "")) for p in productos_catalogo[:6] if p.get("id"))
+        ids_marker = f"[[PRODUTOS_IDS:{ids_str}]]" if ids_str else ""
 
         instruccion_contexto = (
             f"El cliente tiene: {condicion}. "
-            + (f"Llegó a través del paquete '{_pick_field(paquete_encontrado, ['NOMBRE_PAQUETE','nombre_paquete','NOMBRE','nombre','name']) or ''}' que combina estos productos. " if paquete_encontrado else "")
-            + "Para cada producto, explica en 2-3 líneas cómo ayuda específicamente a su condición. "
-            "No menciones precios ni el plan de negocio. "
-            "Termina preguntando: '¿Deseas ver un video relacionado a los productos recomendados? Responde sí para recibir los videos.'"
+            + (f"Los productos provienen del paquete '{str(_pick_field(paquete_encontrado, ['NOMBRE_PAQUETE','nombre_paquete','NOMBRE','nombre','name']) or '')}'. " if paquete_encontrado else "")
+            + "Responde SOLO con un JSON válido con esta estructura exacta (sin texto fuera del JSON):\n"
+            '{"intro": "1-2 oraciones personalizadas saludando y mencionando su condición", '
+            '"productos": [{"nombre": "nombre exacto del producto", "descripcion": "2-3 frases explicando cómo ayuda a su condición específica"}]}'
         )
 
         user_prompt = (
             f"Condición del cliente: {condicion}{paquete_ctx}\n"
-            "Productos encontrados:\n"
+            "Productos del catálogo:\n"
             + "\n---\n".join(partes_prod)
-            + f"\n\nINSTRUCCIONES: {instruccion_contexto}"
+            + f"\n\n{instruccion_contexto}"
         )
 
         messages = [
@@ -1392,31 +1409,53 @@ async def responder_productos(
                     json={
                         "model": "gpt-4o-mini",
                         "temperature": 0.7,
-                        "max_tokens": 600,
+                        "max_tokens": 700,
+                        "response_format": {"type": "json_object"},
                         "messages": messages,
                     },
                 )
                 resp.raise_for_status()
-                recomendacion = resp.json()["choices"][0]["message"]["content"].strip()
-                # Asegurar la pregunta de video al final si no la incluyó
+                raw_content = resp.json()["choices"][0]["message"]["content"].strip()
+
+                # Intentar parsear JSON estructurado para enviar cada producto por separado
+                try:
+                    llm_data = _json.loads(raw_content)
+                    intro_text = str(llm_data.get("intro") or "").strip()
+                    llm_prods = llm_data.get("productos") or []
+                    if intro_text and llm_prods:
+                        mensagens: list[dict] = [{"texto": intro_text}]
+                        for prod_info in llm_prods[:6]:
+                            prod_nombre = str(prod_info.get("nombre") or "").strip()
+                            prod_desc = str(prod_info.get("descripcion") or "").strip()
+                            if not prod_nombre:
+                                continue
+                            # Buscar imagen por nombre (coincidencia parcial)
+                            img_url = ""
+                            for key, url in img_map.items():
+                                if key in prod_nombre.lower() or prod_nombre.lower() in key:
+                                    img_url = url
+                                    break
+                            prod_medios = [{"tipo": "imagen", "url": img_url, "caption": prod_nombre}] if img_url else []
+                            mensagens.append({"texto": f"*{prod_nombre}*\n{prod_desc}", "medios": prod_medios})
+                        video_q = "¿Deseas ver un video de los productos recomendados? Responde *sí* para recibir los videos."
+                        mensagens.append({"texto": video_q + ("\n" + ids_marker if ids_marker else "")})
+                        return {"mensagens": mensagens}
+                except Exception as _je:
+                    print(f"[PASO4] JSON parse error: {_je} — usando texto plano")
+
+                # Fallback: texto plano
+                recomendacion = raw_content
                 if not re.search(r"video|vídeo", recomendacion, re.IGNORECASE):
-                    recomendacion += "\n\n¿Deseas ver un video relacionado a los productos recomendados? Responde 'sí' para recibir los videos."
-                # Insertar marcador oculto con los nombres de los productos para que
-                # el siguiente turno (respuesta "sí") pueda encontrar sus videos.
-                nombres_recomendados = []
-                for p in productos_catalogo[:6]:
-                    n = _pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
-                    if n:
-                        nombres_recomendados.append(n)
-                if nombres_recomendados:
-                    marker = "[[PRODUCTOS:" + "|".join(nombres_recomendados) + "]]"
-                    recomendacion = recomendacion + "\n" + marker
-                # Devolver texto + imágenes de productos
-                if medios_imagenes:
-                    return {"texto": recomendacion, "medios": medios_imagenes}
+                    recomendacion += "\n\n¿Deseas ver un video de los productos? Responde sí para recibirlos."
+                if ids_marker:
+                    recomendacion += "\n" + ids_marker
+                # En fallback, enviar imágenes junto al texto
+                medios_imagenes_fallback = [{"tipo": "imagen", "url": url, "caption": n} for n, url in img_map.items()]
+                if medios_imagenes_fallback:
+                    return {"texto": recomendacion, "medios": medios_imagenes_fallback}
                 return recomendacion
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[PASO4] error LLM: {_e}")
 
     # Sin productos en catálogo → no responder y pausar la conversación
     # (el bot SIEMPRE depende del catálogo; nunca genera respuestas genéricas en PASO4)
