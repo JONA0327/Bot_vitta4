@@ -98,6 +98,24 @@ def _pauta_datos(pauta: dict) -> dict:
     return pauta
 
 
+def _word_overlap(a: str, b: str) -> float:
+    """Fraction of words in the shorter string that appear in the longer string."""
+    wa = set(a.split())
+    wb = set(b.split())
+    if not wa or not wb:
+        return 0.0
+    shorter = wa if len(wa) <= len(wb) else wb
+    longer  = wa | wb  # union — word must appear in either
+    common  = wa & wb
+    return len(common) / len(shorter)
+
+
+def _contains_any_order(text: str, phrase: str) -> bool:
+    """True if ALL words of phrase appear in text (order-independent)."""
+    words = phrase.split()
+    return bool(words) and all(w in text for w in words)
+
+
 def _score_pauta_match(pauta: dict, fb: dict) -> float:
     """Devuelve un puntaje (float) que indica cuán probable es que la pauta
     corresponda a la publicación de Facebook (`fb`)."""
@@ -107,30 +125,46 @@ def _score_pauta_match(pauta: dict, fb: dict) -> float:
     )
     pauta_msg = _normalize_text(d.get("MENSAJE") or d.get("mensaje") or d.get("descripcion") or d.get("message") or "")
     pauta_img = (d.get("IMAGEN_PAUTA") or d.get("imagen_pauta") or d.get("imagen") or "")
+    pauta_full = f"{pauta_title} {pauta_msg}"
 
     fb_title = _normalize_text(fb.get("titulo") or fb.get("title") or "")
     fb_msg = _normalize_text(fb.get("descripcion") or fb.get("mensaje") or fb.get("resumen_para_bot") or "")
-    fb_products = [p.lower() for p in (fb.get("productos_mencionados") or []) if p]
+    fb_products = [_normalize_text(p) for p in (fb.get("productos_mencionados") or []) if p]
     fb_line = _normalize_text(fb.get("nombre_linea") or "")
     fb_img = fb.get("imagen") or ""
+    fb_full = f"{fb_title} {fb_msg} {fb_line} {' '.join(fb_products)}"
 
     score = 0.0
-    # Productos en común (fuerte indicio)
+
+    # ── Productos en común (fuerte indicio) — orden-independiente ─────────────
     for prod in fb_products:
-        if prod and (prod in pauta_msg or prod in pauta_title):
-            score += 3.0
+        if prod:
+            if _contains_any_order(pauta_full, prod) or _contains_any_order(prod, pauta_title):
+                score += 3.0
+            elif _word_overlap(prod, pauta_title) >= 0.5:
+                score += 2.0
 
-    # Línea coincidente
-    if fb_line and (fb_line in pauta_msg or fb_line in pauta_title):
-        score += 2.0
+    # ── Línea de producto coincidente — orden-independiente ───────────────────
+    if fb_line:
+        if _contains_any_order(pauta_full, fb_line) or _contains_any_order(fb_line, pauta_title):
+            score += 2.0
+        else:
+            overlap = _word_overlap(fb_line, pauta_title)
+            if overlap >= 0.5:
+                score += 2.0 * overlap  # proporcional
 
-    # Similitud de título y mensaje (fuzzy)
+    # ── Similitud fuzzy de título y mensaje ───────────────────────────────────
     if fb_title and pauta_title:
         score += SequenceMatcher(None, fb_title, pauta_title).ratio()
     if fb_msg and pauta_msg:
         score += SequenceMatcher(None, fb_msg, pauta_msg).ratio()
 
-    # Comparación simple de nombre de archivo de imagen (si existe)
+    # ── Overlap general de palabras entre toda la info FB y la pauta ──────────
+    global_overlap = _word_overlap(fb_full, pauta_full)
+    if global_overlap >= 0.3:
+        score += global_overlap
+
+    # ── Comparación de nombre de archivo de imagen ────────────────────────────
     try:
         if fb_img and pauta_img and fb_img.split("/")[-1] == pauta_img.split("/")[-1]:
             score += 1.5
@@ -278,14 +312,14 @@ async def _procesar_y_enviar(data: dict) -> None:
                     f"mejor={(_pauta_datos(best).get('NOMBRE_PAUTA') or _pauta_datos(best).get('nombre_pauta')) if best else None!r}")
 
                 # Umbrales de decisión:
-                #   FB            : score >= 1.5 (coincidencia semántica título/productos/imagen)
+                #   FB            : score >= 1.0 (coincidencia semántica por palabras clave)
                 #   no-FB 1 pauta : score >= 0   (no hay otra opción; se usa la única activa)
                 #   no-FB >1 pauta: score >= 1.0 Y debe superar a la segunda en al menos 0.5
                 #                   (evita usar una pauta equivocada cuando hay varias activas)
                 usar_pauta = False
                 if best:
                     if es_fb:
-                        usar_pauta = best_score >= 1.5
+                        usar_pauta = best_score >= 1.0
                     elif len(pautas) == 1:
                         usar_pauta = True  # única pauta activa → se usa siempre en primer contacto
                     else:
