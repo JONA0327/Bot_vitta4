@@ -374,6 +374,16 @@ def _pick_field(rec: dict, keys: List[str]) -> Optional[Any]:
     return None
 
 
+def _is_disponible(p: dict) -> bool:
+    """Retorna True si el producto está disponible según su campo de disponibilidad."""
+    val = _pick_field(p, ["DISPONIBLE", "disponible", "available", "status", "STATUS"])
+    if val is None:
+        return True  # si no hay campo, asumir disponible
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "si", "sí", "disponible", "activo", "available")
+
+
 async def _buscar_testimonios_por_condicion(query: str) -> list:
     res = await _crm_get("testimonios", {"search": query, "per_page": 10})
     if not res:
@@ -435,156 +445,205 @@ async def _buscar_en_catalogos(
     intencion: dict,
     texto_usuario: str,
     terminos_busqueda: str = "",
-) -> list:
-    """Busca productos en testimonios → paquetes → productos según la lógica indicada.
-    Devuelve lista de registros de producto (posiblemente vacía).
+    condicion_detectada: str = "",
+    causas_posibles: list | None = None,
+    sintomas: list | None = None,
+) -> tuple[list, dict | None]:
+    """Busca productos en testimonios (condicion_cronica) → paquetes → productos.
 
-    Si se provee `terminos_busqueda` (resultado del análisis PASO4), se usa como
-    query principal en lugar del texto crudo del historial.
+    Lógica:
+    1. Busca en testimonios usando condicion_detectada y causas_posibles como términos
+       (más precisos que terminos_busqueda genérico). Analiza la descripción del
+       testimonio para verificar relevancia con las causas.
+    2. Obtiene los IDs de productos_sugeridos del testimonio encontrado.
+    3. Busca paquetes que CONTENGAN esos IDs de productos. Si encuentra uno, usa los
+       productos del paquete (solo los disponibles) y retorna el paquete como contexto.
+    4. Si no hay paquete, usa los productos individuales (solo los disponibles).
+    5. Si no hubo coincidencia en testimonios, busca paquetes y productos por query.
+
+    Retorna: (lista_productos, paquete_info_o_None)
     """
-    # ── Query base ──────────────────────────────────────────────────────────
+    causas_posibles = causas_posibles or []
+    sintomas = sintomas or []
+
+    # ── Candidatos de búsqueda para testimonios (condicion_cronica) ──────────
+    # Usar términos específicos: condicion + causas (no el string genérico de terminos_busqueda)
+    cond_candidates: list[str] = []
+    if condicion_detectada:
+        cond_candidates.append(condicion_detectada)
+    for causa in causas_posibles[:3]:
+        if causa and causa not in cond_candidates:
+            cond_candidates.append(causa)
+    for sint in sintomas[:2]:
+        if sint and sint not in cond_candidates:
+            cond_candidates.append(sint)
+    if not cond_candidates and terminos_busqueda:
+        cond_candidates.append(terminos_busqueda)
+
+    # ── Query general para paquetes/productos (fallback) ─────────────────────
+    query_parts: list[str] = []
     if terminos_busqueda:
-        # Usar los términos limpios extraídos por LLM en PASO4 (prioritario)
-        partes = [terminos_busqueda]
-    else:
-        # Fallback: construir desde análisis / intención / historial (comportamiento anterior)
-        partes = []
-        if intencion.get("resumen"):
-            partes.append(intencion.get("resumen"))
-        if analisis.get("resumen_para_bot"):
-            partes.append(analisis.get("resumen_para_bot"))
-        if analisis.get("contexto_usuario"):
-            partes.append(analisis.get("contexto_usuario"))
+        query_parts.append(terminos_busqueda)
+    elif condicion_detectada:
+        query_parts.append(condicion_detectada)
+    if analisis.get("resumen_para_bot"):
+        query_parts.append(analisis.get("resumen_para_bot"))
 
-        # Usar mensajes del historial solo cuando no hay términos limpios de análisis
-        if historial_texto:
-            usuarios = re.findall(r"Usuario:\s*(.+)", historial_texto)
-            if usuarios:
-                partes.append(usuarios[-1])          # último mensaje: describe síntomas/problema
-                if len(usuarios) > 1:
-                    partes.append(usuarios[0])       # primer mensaje: contiene contexto del anuncio/producto
-
-    # Extraer nombres de productos del historial cuando intencion/analisis no los proveen.
-    # Ej: "[PreBiotics, Aloe Vera Stix, Tea4Life]" o el título del anuncio de Facebook.
+    # Extraer nombres de productos del historial/contexto
     productos_hist: list[str] = list(intencion.get("productos_mencionados") or [])
     if isinstance(analisis.get("items"), list):
         for p in analisis["items"]:
             if p and p not in productos_hist:
                 productos_hist.append(p)
     if not productos_hist and historial_texto:
-        # Lista entre corchetes con productos típicos de 4Life
         m_lista = re.search(r"\[([^\[\]]+(?:,|Stix|Life|Tea|Pre|Aloe|4Life)[^\[\]]+)\]", historial_texto)
         if m_lista:
             productos_hist = [p.strip() for p in m_lista.group(1).split(",") if p.strip()]
-        # Si no, buscar el título del anuncio
         if not productos_hist:
             m_titulo = re.search(r"Titulo anuncio:\s*(.+)", historial_texto, re.IGNORECASE)
             if m_titulo:
                 productos_hist = [m_titulo.group(1).strip()]
-        # Texto del anuncio como último recurso
         if not productos_hist:
             m_anuncio = re.search(r"Texto anuncio:\s*\"?(.{10,120})", historial_texto, re.IGNORECASE)
             if m_anuncio:
-                partes.append(m_anuncio.group(1).strip().rstrip('"'))
+                query_parts.append(m_anuncio.group(1).strip().rstrip('"'))
     if productos_hist:
-        partes.append(" ".join(productos_hist))
+        query_parts.append(" ".join(productos_hist))
 
-    query = " ".join(p for p in partes if p)[:800]
-    print(f"[CRMCAT] buscar_en_catalogos query={query!r} partes={len(partes)} productos_hist={productos_hist} analisis_keys={list(analisis.keys())} intencion_products={intencion.get('productos_mencionados')}")
+    query_fallback = " ".join(p for p in query_parts if p)[:800]
+    print(f"[CRMCAT] buscar_en_catalogos cond_candidates={cond_candidates} query_fallback={repr(query_fallback)[:120]} productos_hist={productos_hist} intencion_products={intencion.get('productos_mencionados')}")
 
-    # 1) Buscar testimonios
-    try:
-        if query:
-            tests = await _buscar_testimonios_por_condicion(query)
-            print(f"[CRMCAT] _buscar_testimonios_por_condicion -> {len(tests) if tests else 0}")
-        else:
-            tests = []
-    except Exception as e:
-        print(f"[CRMCAT] error buscando testimonios: {e}")
-        tests = []
-
-    # Elegir primer testimonio relevante
+    # ── 1) Buscar en testimonios (condicion_cronica) ──────────────────────────
+    # Intentar cada candidato de condición/causa hasta encontrar un testimonio relevante
     chosen = None
-    if tests:
+    all_check_terms = [condicion_detectada] + causas_posibles + sintomas
+
+    for term in cond_candidates:
+        try:
+            tests = await _buscar_testimonios_por_condicion(term)
+            print(f"[CRMCAT] testimonios search='{term}' -> {len(tests) if tests else 0}")
+        except Exception as e:
+            print(f"[CRMCAT] error buscando testimonios term='{term}': {e}")
+            tests = []
+        if not tests:
+            continue
         for t in tests:
-            # Campos posibles
-            condicion = _pick_field(t, ["CONDICION_CRONICA", "condicion_cronica", "condicion", "CONDICION", "condicion_cronica_text"]) or ""
-            descripcion = _pick_field(t, ["DESCRIPCION", "descripcion", "description"]) or ""
-            # comparar por substring o similitud
-            if condicion and (condicion.lower() in query.lower() or query.lower() in condicion.lower()):
+            condicion_t = _pick_field(t, ["CONDICION_CRONICA", "condicion_cronica", "condicion", "CONDICION", "condicion_cronica_text"]) or ""
+            descripcion_t = _pick_field(t, ["DESCRIPCION", "descripcion", "description"]) or ""
+            # Relevancia: algún término de condición/causas/síntomas aparece en el testimonio
+            es_relevante = any(
+                ct and (ct.lower() in descripcion_t.lower() or ct.lower() in condicion_t.lower()
+                        or condicion_t.lower() in ct.lower())
+                for ct in all_check_terms if ct
+            ) or (term.lower() in condicion_t.lower() or condicion_t.lower() in term.lower())
+            if es_relevante:
                 chosen = t
                 break
-        if not chosen:
-            # fallback: elegir el primero
-            chosen = tests[0]
+        if not chosen and tests:
+            chosen = tests[0]  # fallback: primer resultado
+        if chosen:
+            break
 
     product_records: list = []
+    paquete_info: dict | None = None
 
-    # Si encontramos testimonio, buscar productos sugeridos (interpretar como id de paquete o ids)
     if chosen:
+        condicion_log = _pick_field(chosen, ["CONDICION_CRONICA", "condicion_cronica", "condicion", "CONDICION"]) or ""
+        print(f"[CRMCAT] testimonio elegido condicion='{condicion_log}'")
         sugeridos = _pick_field(chosen, ["PRODUCTOS_SUGERIDOS", "productos_sugeridos", "productos", "PRODUCTOS"])
-        ids = _extract_ids_from_field(sugeridos)
-        # Si son IDs de paquete, obtener productos del paquete
-        if ids:
-            # Intentar interpretar como paquetes primero
-            for pid in ids:
-                paquete = await _crm_get_by_id("paquetes", pid)
-                if paquete:
-                    # extraer ids de productos del paquete
-                    prod_field = _pick_field(paquete, ["PRODUCTOS", "productos", "productos_ids", "productos_sugeridos"]) or ""
-                    prod_ids = _extract_ids_from_field(prod_field)
-                    if prod_ids:
-                        prods = await _obtener_productos_por_ids(prod_ids)
-                        product_records.extend(prods)
-            # Si no se obtuvieron productos desde paquetes, interpretar ids como productos directos
-            if not product_records:
-                prods = await _obtener_productos_por_ids(ids)
-                product_records.extend(prods)
+        sugeridos_ids: list[int] = _extract_ids_from_field(sugeridos)
+        print(f"[CRMCAT] productos_sugeridos ids={sugeridos_ids}")
 
-    # 2) Si no hay productos por testimonios → buscar paquetes por query
-    if not product_records:
-        paquetes = await _buscar_paquetes_por_query(query)
-        print(f"[CRMCAT] _buscar_paquetes_por_query -> {len(paquetes) if paquetes else 0}")
+        if sugeridos_ids:
+            # Obtener los productos sugeridos para conocer sus nombres
+            suggested_prods = await _obtener_productos_por_ids(sugeridos_ids)
+
+            # ── 2) Buscar paquetes que CONTENGAN los productos sugeridos ──────
+            # (búsqueda por términos de condición; luego verificar por IDs)
+            paquete_encontrado: dict | None = None
+            for search_term in cond_candidates + ([query_fallback] if query_fallback else []):
+                if not search_term:
+                    continue
+                try:
+                    paquetes_res = await _buscar_paquetes_por_query(search_term)
+                    print(f"[CRMCAT] paquetes search='{search_term[:60]}' -> {len(paquetes_res) if paquetes_res else 0}")
+                except Exception as e:
+                    print(f"[CRMCAT] error buscando paquetes: {e}")
+                    paquetes_res = []
+                for paquete in (paquetes_res or []):
+                    paq_prod_field = _pick_field(paquete, ["PRODUCTOS", "productos", "productos_ids", "productos_sugeridos"]) or ""
+                    paq_prod_ids = set(_extract_ids_from_field(paq_prod_field))
+                    # El paquete debe contener al menos uno de los productos sugeridos
+                    if paq_prod_ids.intersection(set(sugeridos_ids)):
+                        paquete_encontrado = paquete
+                        break
+                if paquete_encontrado:
+                    break
+
+            if paquete_encontrado:
+                paq_prod_field = _pick_field(paquete_encontrado, ["PRODUCTOS", "productos", "productos_ids", "productos_sugeridos"]) or ""
+                paq_prod_ids = _extract_ids_from_field(paq_prod_field)
+                prods = await _obtener_productos_por_ids(paq_prod_ids)
+                prods_disp = [p for p in prods if _is_disponible(p)]
+                print(f"[CRMCAT] paquete encontrado → {len(prods_disp)} productos disponibles")
+                product_records.extend(prods_disp)
+                paquete_info = paquete_encontrado
+            else:
+                # ── 3) Sin paquete: usar productos individuales (solo disponibles) ──
+                prods_disp = [p for p in suggested_prods if _is_disponible(p)]
+                print(f"[CRMCAT] sin paquete → {len(prods_disp)} productos individuales disponibles")
+                product_records.extend(prods_disp)
+
+    # ── 4) Fallback: buscar paquetes por query general ────────────────────────
+    if not product_records and query_fallback:
+        try:
+            paquetes = await _buscar_paquetes_por_query(query_fallback)
+            print(f"[CRMCAT] fallback paquetes -> {len(paquetes) if paquetes else 0}")
+        except Exception:
+            paquetes = []
         if paquetes:
-            # elegir el paquete más relevante (primer elemento)
             paquete = paquetes[0]
             prod_field = _pick_field(paquete, ["PRODUCTOS", "productos", "productos_ids"]) or ""
             prod_ids = _extract_ids_from_field(prod_field)
             if prod_ids:
                 prods = await _obtener_productos_por_ids(prod_ids)
-                product_records.extend(prods)
+                prods_disp = [p for p in prods if _is_disponible(p)]
+                product_records.extend(prods_disp)
+                paquete_info = paquete
 
-    # 3) Si aún no hay productos → buscar directamente en productos
-    if not product_records:
-        productos = await _buscar_productos_por_query(query, per_page=12)
-        print(f"[CRMCAT] _buscar_productos_por_query -> {len(productos) if productos else 0}")
+    # ── 5) Fallback: buscar directamente en productos por query general ───────
+    if not product_records and query_fallback:
+        try:
+            productos = await _buscar_productos_por_query(query_fallback, per_page=12)
+            print(f"[CRMCAT] fallback productos -> {len(productos) if productos else 0}")
+        except Exception:
+            productos = []
         if productos:
-            product_records.extend(productos)
+            disp = [p for p in productos if _is_disponible(p)]
+            product_records.extend(disp)
 
-    # 4) Filtrar por productos que venían en la publicación / historial (si aplica)
-    items_fb = []
-    if isinstance(analisis.get("items"), list):
-        items_fb = analisis.get("items")
-    # Usar productos_hist (ya calculado arriba) para no perder el contexto del anuncio
+    # ── 6) Filtrar por productos mencionados en publicación FB (si aplica) ────
+    items_fb = list(analisis.get("items") or []) if isinstance(analisis.get("items"), list) else []
     filtro_nombres = [p.lower() for p in productos_hist if p] + [p.lower() for p in items_fb if p]
-    # Quitar duplicados manteniendo orden
     seen: set = set()
-    filtro_nombres_unico = []
+    filtro_unico = []
     for n in filtro_nombres:
         if n not in seen:
             seen.add(n)
-            filtro_nombres_unico.append(n)
+            filtro_unico.append(n)
 
-    if filtro_nombres_unico and product_records:
-        filtered = []
-        for pr in product_records:
-            name = _pick_field(pr, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or pr.get("nombre") or pr.get("PRODUCTO") or ""
-            if name and any(fb in name.lower() for fb in filtro_nombres_unico):
-                filtered.append(pr)
+    if filtro_unico and product_records:
+        filtered = [
+            pr for pr in product_records
+            if any(
+                fb in (_pick_field(pr, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or "").lower()
+                for fb in filtro_unico
+            )
+        ]
         if filtered:
-            return filtered
+            return filtered, paquete_info
 
-    return product_records
+    return product_records, paquete_info
 
 
 async def _responder_paso1(instancia: str, analisis: dict | None = None, intencion: dict | None = None) -> str | None:
@@ -1000,32 +1059,57 @@ async def responder_productos(
 
     contexto_str = "\n".join(contexto_partes)
 
-    # ── Buscar en catálogos usando los términos limpios del análisis ──────────
+    # ── Buscar en catálogos usando condición, causas y términos del análisis ──
     try:
-        productos_catalogo = await _buscar_en_catalogos(
+        productos_catalogo, paquete_encontrado = await _buscar_en_catalogos(
             historial_texto, analisis, intencion, texto_usuario,
             terminos_busqueda=terminos_catalogo,
+            condicion_detectada=condicion_detectada,
+            causas_posibles=analisis_entrevista.get("causas_posibles") or [],
+            sintomas=sintomas_detectados,
         )
     except Exception:
         productos_catalogo = []
+        paquete_encontrado = None
 
     if productos_catalogo:
         # Condición para el prompt: priorizar la extraída por análisis LLM
         condicion = condicion_detectada or intencion.get("resumen") or analisis.get("contexto_usuario") or ""
         if sintomas_detectados:
             condicion = f"{condicion} (síntomas: {', '.join(sintomas_detectados)})" if condicion else f"Síntomas: {', '.join(sintomas_detectados)}"
+
+        # Contexto del paquete si fue encontrado
+        paquete_ctx = ""
+        if paquete_encontrado:
+            paq_nombre = _pick_field(paquete_encontrado, ["NOMBRE_PAQUETE", "nombre_paquete", "NOMBRE", "nombre", "name"]) or ""
+            paq_desc = _pick_field(paquete_encontrado, ["DESCRIPCION", "descripcion", "description"]) or ""
+            if paq_nombre or paq_desc:
+                paquete_ctx = f"\nPaquete recomendado: {paq_nombre}\nDescripción del paquete: {paq_desc}"
+
         partes_prod = []
+        medios_imagenes: list[dict] = []
         for p in productos_catalogo[:6]:
             nombre = _pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or p.get("nombre") or ""
             descripcion = _pick_field(p, ["DESCRIPCION", "descripcion", "description"]) or p.get("descripcion") or ""
             video = _pick_field(p, ["VIDEO", "video", "video_url", "url_video", "video_link"]) or p.get("video") or ""
+            imagen = _pick_field(p, ["IMAGEN", "imagen", "image", "imagen_url", "url_imagen", "foto"]) or p.get("imagen") or ""
             partes_prod.append(f"Nombre: {nombre}\nDescripción: {descripcion}\nVideo: {video}")
+            if imagen:
+                medios_imagenes.append({"tipo": "imagen", "url": imagen, "caption": nombre})
+
+        instruccion_contexto = (
+            f"El cliente tiene: {condicion}. "
+            + (f"Llegó a través del paquete '{_pick_field(paquete_encontrado, ['NOMBRE_PAQUETE','nombre_paquete','NOMBRE','nombre','name']) or ''}' que combina estos productos. " if paquete_encontrado else "")
+            + "Para cada producto, explica en 2-3 líneas cómo ayuda específicamente a su condición. "
+            "No menciones precios ni el plan de negocio. "
+            "Termina preguntando: '¿Deseas ver un video relacionado a los productos recomendados? Responde sí para recibir los videos.'"
+        )
 
         user_prompt = (
-            f"Condición del cliente: {condicion}\n"
-            "Productos encontrados (mostrar nombre, descripción y video si existe):\n"
+            f"Condición del cliente: {condicion}{paquete_ctx}\n"
+            "Productos encontrados:\n"
             + "\n---\n".join(partes_prod)
-            + "\n\nINSTRUCCIONES: Eres un experto en los productos listados. Para cada producto escribe 2-3 líneas explicando para qué sirve y cómo puede ayudar específicamente a la condición del cliente. No menciones precios ni el plan de negocio. Termina preguntando: '¿Deseas ver un video relacionado a los productos recomendados? Responde sí para recibir los videos.'"
+            + f"\n\nINSTRUCCIONES: {instruccion_contexto}"
         )
 
         messages = [
@@ -1052,7 +1136,10 @@ async def responder_productos(
                 recomendacion = resp.json()["choices"][0]["message"]["content"].strip()
                 # Asegurar la pregunta de video al final si no la incluyó
                 if not re.search(r"video|vídeo", recomendacion, re.IGNORECASE):
-                    recomendacion = recomendacion + "\n\n¿Deseas ver un video relacionado a los productos recomendados? Responde 'sí' para recibir los videos."
+                    recomendacion += "\n\n¿Deseas ver un video relacionado a los productos recomendados? Responde 'sí' para recibir los videos."
+                # Devolver texto + imágenes de productos
+                if medios_imagenes:
+                    return {"texto": recomendacion, "medios": medios_imagenes}
                 return recomendacion
         except Exception:
             pass
