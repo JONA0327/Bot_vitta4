@@ -394,6 +394,36 @@ def _is_disponible(p: dict) -> bool:
     return str(val).strip().lower() in ("1", "true", "si", "sí", "disponible", "activo", "available")
 
 
+def _pick_imagen(p: dict) -> str:
+    """Busca la URL de imagen de un producto en todos sus campos.
+    Primero intenta nombres conocidos, luego escanea todos los valores
+    en datos buscando URLs con extensiones de imagen o rutas /storage/.
+    """
+    # Intentar nombres de campo conocidos
+    known = _pick_field(p, [
+        "IMAGEN", "imagen", "FOTO", "foto", "IMAGE", "image",
+        "IMAGEN_PRODUCTO", "imagen_producto", "IMAGEN_URL", "imagen_url",
+        "URL_IMAGEN", "url_imagen", "PHOTO", "photo", "IMG", "img",
+        "IMAGE_URL", "image_url", "FOTO_URL", "foto_url",
+        "thumbnail", "THUMBNAIL", "portada", "PORTADA",
+    ])
+    if known:
+        return str(known)
+    # Escanear todos los campos de datos buscando URLs de imagen
+    datos = p.get("datos") if isinstance(p.get("datos"), dict) else p
+    _IMG_EXTS = ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp')
+    for k, v in datos.items():
+        if not v:
+            continue
+        sv = str(v)
+        sv_lower = sv.lower()
+        if any(sv_lower.endswith(ext) or (ext + '?') in sv_lower for ext in _IMG_EXTS):
+            return sv
+        if ('/storage/' in sv_lower or '/uploads/' in sv_lower or '/catalog/' in sv_lower) and sv.startswith('http'):
+            return sv
+    return ""
+
+
 async def _obtener_todos_testimonios(per_page: int = 100) -> list:
     """Obtiene todos los testimonios sin filtro de búsqueda."""
     res = await _crm_get("testimonios", {"per_page": per_page})
@@ -622,15 +652,33 @@ async def _buscar_productos_por_query(query: str, per_page: int = 10) -> list:
 
 
 async def _obtener_productos_por_ids(ids: List[int]) -> list:
-    out = []
-    for i in ids:
+    """Obtiene productos por IDs buscando dentro de la lista completa.
+    El endpoint individual /productos/{id} no existe en la API, así que
+    descargamos todos y filtramos por el campo 'id' del record.
+    """
+    if not ids:
+        return []
+    todos = await _obtener_todos_productos()
+    target = set(ids)
+    result = []
+    for p in todos:
         try:
-            rec = await _crm_get_by_id("productos", i)
-            if rec:
-                out.append(rec)
-        except Exception:
-            continue
-    return out
+            if int(p.get("id", -1)) in target:
+                result.append(p)
+        except (TypeError, ValueError):
+            pass
+    if not result:
+        # Fallback: si el ID está dentro de datos (algunas implementaciones)
+        for p in todos:
+            datos = p.get("datos") if isinstance(p.get("datos"), dict) else {}
+            try:
+                inner_id = int(datos.get("ID") or datos.get("id") or -1)
+                if inner_id in target:
+                    result.append(p)
+            except (TypeError, ValueError):
+                pass
+    print(f"[CRM] _obtener_productos_por_ids ids={ids} → encontrados={len(result)}")
+    return result
 
 
 def _extract_ids_from_field(value: Any) -> list:
@@ -1243,7 +1291,7 @@ async def responder_productos(
             nombre = _pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or p.get("nombre") or ""
             descripcion = _pick_field(p, ["DESCRIPCION", "descripcion", "description"]) or p.get("descripcion") or ""
             video = _pick_field(p, ["VIDEO", "video", "video_url", "url_video", "video_link"]) or p.get("video") or ""
-            imagen = _pick_field(p, ["IMAGEN", "imagen", "image", "imagen_url", "url_imagen", "foto"]) or p.get("imagen") or ""
+            imagen = _pick_imagen(p)
             partes_prod.append(f"Nombre: {nombre}\nDescripción: {descripcion}\nVideo: {video}")
             if imagen:
                 medios_imagenes.append({"tipo": "imagen", "url": imagen, "caption": nombre})
