@@ -157,32 +157,37 @@ REGLAS ADICIONALES:
 - NO expliques el producto, solo haz la pregunta de indagación.
 """
 
-# Prompt PASO 3 — Diagnóstico profundo antes de recomendar
-_PASO3_SYSTEM = """Eres una asesora de ventas de 4Life que atiende por WhatsApp.
-Estás en la FASE DE DIAGNÓSTICO — tu misión es entender el problema del cliente en profundidad
-ANTES de recomendar cualquier producto.
+# Prompt PASO 3 — Entrevista clínica estructurada para identificar la condición
+_PASO3_SYSTEM = """Eres una especialista en salud natural con formación clínica que atiende por WhatsApp.
+Tu misión es realizar una ENTREVISTA CLÍNICA ESTRUCTURADA para identificar con la mayor precisión
+posible la condición de salud del paciente ANTES de recomendar cualquier producto.
+NO eres médico y NO debes dar diagnósticos médicos al paciente — eso es tarea interna del sistema.
+Tu función aquí es recopilar información clínica completa haciendo UNA pregunta a la vez.
 
-TU TAREA (una pregunta a la vez):
-Haz las preguntas necesarias para entender:
-  1. ¿Cuál es exactamente su problema o necesidad?
-  2. ¿Cuánto tiempo lleva con ese problema?
-  3. ¿Qué lo causa o qué lo desencadena?
-  4. ¿Cuánto le afecta en su vida diaria (escala 1-10 o descripción)?
-  5. ¿Ha probado algo antes? ¿Con qué resultado?
+METODOLOGÍA CLÍNICA (sigue este orden según lo que ya tienes en el historial):
+  1. Síntoma PRINCIPAL: ¿Qué molestia exacta sientes? (pide descripción detallada si es vaga)
+  2. LOCALIZACIÓN: ¿Dónde exactamente lo sientes? ¿Se extiende o irradia a otro lugar?
+  3. TEMPORALIDAD: ¿Cuánto tiempo llevas así? ¿Es constante o va y viene? ¿Con qué frecuencia?
+  4. INTENSIDAD e IMPACTO: ¿Qué tanto afecta tu vida diaria? (del 1 al 10, o descríbelo)
+  5. FACTORES: ¿Qué lo empeora? ¿Qué lo alivia? ¿En qué momento del día es peor?
+  6. SÍNTOMAS ASOCIADOS: ¿Tienes otros síntomas que aparecen junto con este? (sueño, digestión, ánimo, etc.)
+  7. HISTORIAL: ¿Te han dado algún diagnóstico médico? ¿Has tomado algo — medicamento o suplemento — antes?
 
 REGLAS ESTRICTAS:
-- Haz SIEMPRE solo UNA pregunta por mensaje. Corta, directa y cálida.
-- MÁXIMO 2 líneas por respuesta. SIN emojis — el tono cálido lo transmites con las palabras.
+- Haz SIEMPRE solo UNA pregunta por mensaje. Corta, específica y cálida.
+- MÁXIMO 2 líneas por respuesta. SIN emojis — la calidez la transmites con las palabras.
 - NO recomiendes productos todavía.
 - NO menciones precios, marcas ni 4Life.
-- REVISA el historial antes de preguntar; JAMÁS repitas una pregunta que ya fue respondida.
-- PREGUNTAS RESTANTES: {preguntas_restantes}. Cuando llegues a 0 debes usar [[LISTO]] obligatoriamente.
+- NO des diagnósticos al paciente — solo recaba información.
+- REVISA el historial antes de preguntar; JAMÁS repitas una pregunta ya respondida.
+- Si una respuesta es muy vaga o ambigua, profundiza con una pregunta de aclaración antes de avanzar.
+- PREGUNTAS RESTANTES: {preguntas_restantes}. Cuando llegues a 0 usa [[LISTO]] obligatoriamente.
 
-CUANDO TENGAS SUFICIENTE INFORMACIÓN (problema, duración, causas, impacto):
+CUANDO TENGAS INFORMACIÓN SUFICIENTE (mínimo: síntoma principal + duración + factores + impacto):
 - Inicia tu respuesta con la línea exacta: [[LISTO]]
-- Luego escribe un mensaje corto empático de cierre, sin emojis, ej:
-  "Perfecto, con lo que me has contado ya tengo todo lo que necesito."
-- Usa [[LISTO]] también cuando se agoten las preguntas restantes, aunque no tengas todo.
+- Luego escribe un mensaje corto y empático de transición, sin emojis, ej:
+  "Con todo lo que me compartiste ya tengo lo necesario para orientarte bien."
+- Usa [[LISTO]] también cuando se agoten las preguntas restantes, aunque no lo tengas todo.
 """
 
 # Señal que el bot incluye cuando PASO 3 está completo
@@ -439,6 +444,9 @@ def _pick_imagen(p: dict) -> str:
     _IMG_PATHS = ('/storage/', '/uploads/', '/catalog/', '/images/', '/media/', '/img/')
 
     def _is_image_url(s: str) -> bool:
+        # Imágenes almacenadas como base64 data URI en el catálogo
+        if s.startswith('data:image/') and ';base64,' in s:
+            return True
         sl = s.lower()
         if any(sl.endswith(ext) or (ext + '?') in sl or (ext + '&') in sl for ext in _IMG_EXTS):
             return True
@@ -702,22 +710,25 @@ async def _ia_elegir_productos(
     causas_txt = ", ".join(causas) if causas else "no especificadas"
 
     system_prompt = (
-        "Eres un experto en suplementos nutricionales. "
-        "Tu tarea es analizar CUIDADOSAMENTE la descripción completa de cada producto "
-        "y determinar si realmente beneficia la condición del paciente. "
-        "Lee cada descripción palabra por palabra antes de decidir. "
-        "Sé ESTRICTO: solo incluye productos cuya descripción indique claramente que ayuda "
-        "a esa condición específica, síntomas o causas. "
-        "Si la descripción habla de algo completamente diferente, NO lo incluyas."
+        "Eres un médico especialista en medicina integrativa y nutrición clínica. "
+        "Analiza CADA producto con criterio clínico riguroso: lee su descripción completa "
+        "y evalúa si sus ingredientes activos tienen evidencia real de beneficio para la condición exacta del paciente. "
+        "Sé MUY ESTRICTO:\n"
+        "- Solo incluye productos cuya descripción demuestre claramente que ayuda a esa condición específica, "
+        "  sus síntomas o sus causas raíz.\n"
+        "- Rechaza productos genéricos de bienestar que no aborden directamente la condición.\n"
+        "- Rechaza productos cuya descripción hable de algo completamente diferente.\n"
+        "- Prefiere calidad sobre cantidad: es mejor recomendar 1 producto excelente que 3 mediocres.\n"
+        "- Máximo 3 productos. Mínimo 0 (si ninguno aplica genuinamente, responde -1)."
     )
 
     user_prompt = (
-        f"Condición del paciente: {condicion}\n"
-        f"Síntomas: {sintomas_txt}\n"
-        f"Posibles causas: {causas_txt}\n\n"
-        f"Catálogo de productos disponibles:\n{productos_txt}\n\n"
-        "INSTRUCCIÓN: Analiza la descripción de cada producto. "
-        "Lista SOLO los índices de productos que genuinamente ayudan a esta condición (máximo 3). "
+        f"Condición clínica del paciente: {condicion}\n"
+        f"Síntomas específicos: {sintomas_txt}\n"
+        f"Causas o factores contribuyentes: {causas_txt}\n\n"
+        f"Catálogo de productos DISPONIBLES:\n{productos_txt}\n\n"
+        "INSTRUCCIÓN CRÍTICA: Evalúa clínicamente cada producto contra la condición del paciente. "
+        "Lista SOLO los índices de productos que genuinamente pueden ayudar (máximo 3). "
         "Si ninguno aplica realmente, responde exactamente: -1\n"
         "Responde solo con índices separados por coma o -1. Sin texto adicional. Ejemplo: 0,2"
     )
@@ -1220,31 +1231,56 @@ def _contar_turnos_bot(historial_texto: str) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 # Función principal
 # ─────────────────────────────────────────────────────────────────────────────
+# System prompt para análisis clínico de la entrevista (PASO 4)
+_PASO4_ANALISIS_SYSTEM = """Eres un médico especialista en medicina integrativa y nutrición clínica con 20 años de experiencia.
+Tu tarea es analizar una entrevista de salud registrada en una conversación de WhatsApp y determinar,
+con la mayor precisión clínica posible, qué condición o conjunto de condiciones padece el paciente.
+
+CRITERIOS DE ANÁLISIS:
+- Basa tu análisis ÚNICAMENTE en los síntomas, duración, factores e historial descritos en la conversación.
+- Sé MUY ESPECÍFICO en el diagnóstico. Ejemplos de precisión requerida:
+    * NO "problemas digestivos" → SÍ "síndrome de intestino irritable" o "reflujo gastroesofágico crónico"
+    * NO "cansancio" → SÍ "fatiga crónica" o "anemia ferropénica" o "hipotiroidismo subclinico"
+    * NO "dolor de cabeza" → SÍ "migraña tensional" o "cefalea crónica por estrés"
+    * NO "dolor articular" → SÍ "artritis reumatoide temprana" o "artrosis de rodilla bilateral"
+    * NO "problemas hormonales" → SÍ "síndrome de ovario poliquístico" o "menopausia temprana"
+- Si los síntomas apuntan a más de una condición, lista todas en el diagnóstico diferencial.
+- Identifica las causas raíz más probables, no solo los síntomas superficiales.
+- Los términos de búsqueda deben ser palabras clave técnicas Y coloquiales que permitan encontrar
+  suplementos relevantes en un catálogo (ej: "reflujo acidez digestión enzimas probióticos").
+
+IMPORTANTE: No diagnostiques al paciente directamente — tu análisis es para uso interno del sistema
+para seleccionar los suplementos más apropiados."""
+
+
 async def _analizar_entrevista_paso4(historial_texto: str) -> dict:
-    """Analiza el historial de PASO 3 con LLM y extrae síntomas, condición y términos de búsqueda.
+    """Analiza el historial de PASO 3 con LLM clínico y extrae condición precisa, síntomas y búsqueda.
 
     Retorna dict con:
-      condicion_principal  : str  — ej. "problemas digestivos"
-      sintomas             : list — ej. ["gases", "agruras", "acidez"]
-      causas_posibles      : list — ej. ["estrés", "alimentación inadecuada"]
-      terminos_busqueda    : str  — 2-5 palabras clave cortas para el catálogo
+      condicion_principal  : str  — ej. "síndrome de intestino irritable"
+      diagnostico_diferencial: list — ej. ["colitis ulcerosa leve", "sobrecrecimiento bacteriano"]
+      sintomas             : list — ej. ["distensión abdominal", "dolor tipo cólico", "alternancia diarrea-estreñimiento"]
+      causas_posibles      : list — ej. ["disbiosis intestinal", "estrés crónico", "dieta alta en ultraprocesados"]
+      terminos_busqueda    : str  — palabras clave técnicas y coloquiales para el catálogo de suplementos
+      severidad            : str  — "leve" | "moderada" | "severa"
     """
     if not OPENAI_API_KEY or not historial_texto:
         return {}
 
-    prompt = (
-        "Analiza la siguiente conversación de entrevista de salud. "
-        "Extrae de forma estructurada los síntomas, la condición principal y términos clave para buscar suplementos.\n\n"
-        f"CONVERSACIÓN:\n{historial_texto}\n\n"
-        "Responde ÚNICAMENTE con JSON válido (sin bloque de código markdown) con esta estructura exacta:\n"
-        '{"condicion_principal":"nombre corto de la condición",'
-        '"sintomas":["síntoma1","síntoma2"],'
-        '"causas_posibles":["causa1","causa2"],'
-        '"terminos_busqueda":"2-5 palabras clave cortas para buscar en catálogo de suplementos"}'
+    user_prompt = (
+        f"CONVERSACIÓN DE ENTREVISTA DE SALUD:\n{historial_texto}\n\n"
+        "Analiza esta conversación y responde ÚNICAMENTE con JSON válido (sin bloques markdown) "
+        "con esta estructura exacta:\n"
+        '{"condicion_principal":"nombre clínico específico de la condición principal",'
+        '"diagnostico_diferencial":["condición alternativa 1","condición alternativa 2"],'
+        '"sintomas":["síntoma específico 1","síntoma específico 2","síntoma específico 3"],'
+        '"causas_posibles":["causa raíz 1","causa raíz 2"],'
+        '"terminos_busqueda":"palabras clave técnicas y coloquiales para buscar suplementos en catálogo",'
+        '"severidad":"leve|moderada|severa"}'
     )
 
     try:
-        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=max(OPENAI_TIMEOUT, 30.0)) as client:
             resp = await client.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={
@@ -1252,10 +1288,13 @@ async def _analizar_entrevista_paso4(historial_texto: str) -> dict:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "gpt-4o-mini",
-                    "temperature": 0.2,
-                    "max_tokens": 300,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "model": "gpt-4o",
+                    "temperature": 0.1,
+                    "max_tokens": 500,
+                    "messages": [
+                        {"role": "system", "content": _PASO4_ANALISIS_SYSTEM},
+                        {"role": "user", "content": user_prompt},
+                    ],
                 },
             )
             resp.raise_for_status()
@@ -1264,7 +1303,7 @@ async def _analizar_entrevista_paso4(historial_texto: str) -> dict:
             if content.startswith("```"):
                 content = re.sub(r"```(?:json)?\n?", "", content).strip().rstrip("`").strip()
             result = json.loads(content)
-            print(f"[PASO4] analisis_entrevista={result!r}")
+            print(f"[PASO4] analisis_clinico={result!r}")
             return result
     except Exception as e:
         print(f"[PASO4] Error en _analizar_entrevista_paso4: {e}")
@@ -1439,10 +1478,17 @@ async def responder_productos(
         paquete_encontrado = None
 
     if productos_catalogo:
-        # Condición para el prompt: priorizar la extraída por análisis LLM
+        # Condición clínica completa para el prompt de recomendación
+        diferencial: list[str] = analisis_entrevista.get("diagnostico_diferencial") or []
+        severidad: str = analisis_entrevista.get("severidad") or ""
         condicion = condicion_detectada or intencion.get("resumen") or analisis.get("contexto_usuario") or ""
+        condicion_completa = condicion
         if sintomas_detectados:
-            condicion = f"{condicion} (síntomas: {', '.join(sintomas_detectados)})" if condicion else f"Síntomas: {', '.join(sintomas_detectados)}"
+            condicion_completa += f" — síntomas: {', '.join(sintomas_detectados)}"
+        if diferencial:
+            condicion_completa += f" — diferencial: {', '.join(diferencial)}"
+        if severidad:
+            condicion_completa += f" — severidad: {severidad}"
 
         # Contexto del paquete si fue encontrado
         paquete_ctx = ""
@@ -1461,7 +1507,9 @@ async def responder_productos(
             descripcion = str(_pick_field(p, ["DESCRIPCION", "descripcion", "description"]) or p.get("descripcion") or "")
             imagen = _pick_imagen(p)
             datos_layer = p.get("datos") if isinstance(p.get("datos"), dict) else p
-            print(f"[PASO4] prod id={p.get('id')} campos={list(datos_layer.keys())[:20]} imagen={imagen!r}")
+            es_b64 = imagen.startswith('data:image/') if imagen else False
+            print(f"[PASO4] prod id={p.get('id')} campos={list(datos_layer.keys())[:20]} "
+                  f"imagen={'base64({} chars)'.format(len(imagen)) if es_b64 else repr(imagen)}")
             partes_prod.append(f"Nombre: {nombre}\nDescripción: {descripcion}")
             if nombre and imagen:
                 img_map[nombre.lower()] = imagen
@@ -1471,15 +1519,16 @@ async def responder_productos(
         ids_marker = f"[[PRODUTOS_IDS:{ids_str}]]" if ids_str else ""
 
         instruccion_contexto = (
-            f"El cliente tiene: {condicion}. "
+            f"El cliente tiene: {condicion_completa}. "
             + (f"Los productos provienen del paquete '{str(_pick_field(paquete_encontrado, ['NOMBRE_PAQUETE','nombre_paquete','NOMBRE','nombre','name']) or '')}'. " if paquete_encontrado else "")
+            + "Explica con precisión clínica cómo cada producto ayuda ESPECÍFICAMENTE a su condición. "
             + "Responde SOLO con un JSON válido con esta estructura exacta (sin texto fuera del JSON):\n"
-            '{"intro": "1-2 oraciones personalizadas saludando y mencionando su condición", '
-            '"productos": [{"nombre": "nombre exacto del producto", "descripcion": "2-3 frases explicando cómo ayuda a su condición específica"}]}'
+            '{"intro": "1-2 oraciones personalizadas mencionando su condición específica", '
+            '"productos": [{"nombre": "nombre exacto del producto", "descripcion": "2-3 frases clínicas explicando cómo ayuda a su condición y síntomas específicos"}]}'
         )
 
         user_prompt = (
-            f"Condición del cliente: {condicion}{paquete_ctx}\n"
+            f"Condición clínica del cliente: {condicion_completa}{paquete_ctx}\n"
             "Productos del catálogo:\n"
             + "\n---\n".join(partes_prod)
             + f"\n\n{instruccion_contexto}"
@@ -1515,7 +1564,7 @@ async def responder_productos(
                     intro_text = str(llm_data.get("intro") or "").strip()
                     llm_prods = llm_data.get("productos") or []
                     if intro_text and llm_prods:
-                        print(f"[PASO4] img_map={img_map}")
+                        print(f"[PASO4] img_map keys={list(img_map.keys())} count={len(img_map)}")
                         mensagens: list[dict] = [{"texto": intro_text}]
                         for prod_info in llm_prods[:6]:
                             prod_nombre = str(prod_info.get("nombre") or "").strip()
@@ -1528,8 +1577,10 @@ async def responder_productos(
                                 if key in prod_nombre.lower() or prod_nombre.lower() in key:
                                     img_url = url
                                     break
+                            es_b64_img = img_url.startswith('data:image/') if img_url else False
+                            print(f"[PASO4] prod_nombre={prod_nombre!r} "
+                                  f"img={'base64({} chars)'.format(len(img_url)) if es_b64_img else repr(img_url)}")
                             prod_medios = [{"tipo": "imagen", "url": img_url, "caption": prod_nombre}] if img_url else []
-                            print(f"[PASO4] prod_nombre={prod_nombre!r} img_url={img_url!r} prod_medios={prod_medios}")
                             mensagens.append({"texto": f"*{prod_nombre}*\n{prod_desc}", "medios": prod_medios})
                         video_q = "¿Deseas ver un video de los productos recomendados? Responde *sí* para recibir los videos."
                         mensagens.append({"texto": video_q + ("\n" + ids_marker if ids_marker else "")})
@@ -1555,3 +1606,4 @@ async def responder_productos(
     # (el bot SIEMPRE depende del catálogo; nunca genera respuestas genéricas en PASO4)
     print(f"[PASO4] sin productos en catálogo para condicion='{condicion_detectada}' → pausando")
     return {"texto": None, "pausar": True, "motivo": "sin_productos_catalogo"}
+
