@@ -1538,6 +1538,27 @@ async def responder_productos(
             preguntas_restantes=preguntas_restantes,
         )
 
+    # ── POST-RECOMENDACIÓN: el bot ya envió la ficha de productos (PASO4) ──────
+    # Si el último mensaje del bot contiene "¿Deseas ver un video" (marcador de PASO4
+    # completado) y el usuario responde "no", pregunta precio u otro cierre →
+    # pausar la conversación sin re-enviar los productos.
+    try:
+        if historial_texto:
+            _all_bot_pr = re.findall(r"Bot:\s*(.*?)(?=\nUsuario:|\Z)", historial_texto, re.DOTALL)
+            _last_bot_pr = (_all_bot_pr[-1] if _all_bot_pr else "").strip()
+            _bot_envio_recom = bool(re.search(
+                r"deseas ver un video|quieres ver un video|te interesa ver el video",
+                _last_bot_pr, re.IGNORECASE
+            ))
+            if _bot_envio_recom:
+                _intento_pr = await _clasificar_post_video(texto_usuario)
+                if _intento_pr == "pausar":
+                    print(f"[PostRecom] usuario cerró tras recomendación → pausar")
+                    return {"texto": None, "pausar": True, "motivo": "post_video_cierre_usuario"}
+                # nuevo_producto → dejar caer en PASO4 para una nueva recomendación
+    except Exception as _pr_e:
+        print(f"[PostRecom] error: {_pr_e}")
+
     # ── PASO 4: Recomendación de productos (PASO 3 ya completado) ─────────────
     # Paso 4a — Analizar la entrevista PASO3 para extraer síntomas/condición/términos de búsqueda
     analisis_entrevista: dict = {}
