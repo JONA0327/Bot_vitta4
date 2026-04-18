@@ -319,18 +319,17 @@ async def _procesar_y_enviar(data: dict) -> None:
                     f"mejor={(_pauta_datos(best).get('NOMBRE_PAUTA') or _pauta_datos(best).get('nombre_pauta')) if best else None!r}")
 
                 # Umbrales de decisión:
-                #   FB            : score >= 1.0 (coincidencia semántica por palabras clave)
-                #   no-FB 1 pauta : score >= 0   (no hay otra opción; se usa la única activa)
-                #   no-FB >1 pauta: score >= 1.0 Y debe superar a la segunda en al menos 0.5
-                #                   (evita usar una pauta equivocada cuando hay varias activas)
+                #   FB     : score >= 1.0 (debe coincidir semánticamente con la publicación)
+                #   no-FB  : siempre usar la mejor pauta activa — sin umbral de score.
+                #            Si hay varias pautas activas se toma la de mayor score; si hay
+                #            empate se toma la primera. El administrador configuró esas pautas
+                #            para que se usen en primer contacto aunque no venga de FB.
                 usar_pauta = False
                 if best:
                     if es_fb:
                         usar_pauta = best_score >= 1.0
-                    elif len(pautas) == 1:
-                        usar_pauta = True  # única pauta activa → se usa siempre en primer contacto
                     else:
-                        usar_pauta = best_score >= 1.0 and (best_score - second_score) >= 0.5
+                        usar_pauta = True  # sin FB: usar siempre la mejor pauta activa
 
                 if usar_pauta and best:
                     _bd = _pauta_datos(best)
