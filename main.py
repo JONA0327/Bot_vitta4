@@ -421,22 +421,22 @@ async def _procesar_y_enviar(data: dict) -> None:
                 from Historial_Conversacion import IrrelevantConversationModel
             except ImportError:
                 IrrelevantConversationModel = None
-            # Marcar conversación como pausada via CRM bot-send con señal especial
+            # Pausar conversación vía CRM /blocked_numbers con tipo_bloqueo=irrelevante
             async def _pausar_conv() -> None:
                 if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN):
                     return
+                _jid = remote_jid or telefono
                 try:
                     async with httpx.AsyncClient(timeout=10) as client:
                         await client.post(
-                            f"{CRM_URL}/api/v1/{CRM_TENANT}/bot-send",
+                            f"{CRM_URL}/api/v1/{CRM_TENANT}/blocked_numbers",
                             headers={"X-API-Key": CRM_API_TOKEN, "Content-Type": "application/json"},
                             json={
-                                "telefono":     telefono,
-                                "remote_jid":   remote_jid,
-                                "instancia":    instancia,
-                                "tipo_bloqueo": "irrelevante",
-                                "motivo":       "sin_productos_catalogo",
-                                "respuesta":    "",
+                                "Numero_Baneado": telefono,
+                                "Numero_Remote":  _jid,
+                                "Motivo_Bloqueo": motivo,
+                                "tipo_bloqueo":   "irrelevante",
+                                "instancia":      instancia,
                             },
                         )
                 except Exception as exc:

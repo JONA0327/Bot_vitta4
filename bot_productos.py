@@ -1270,6 +1270,52 @@ def _contar_turnos_bot(historial_texto: str) -> int:
     return historial_texto.count("\nBot:") + (1 if historial_texto.startswith("Bot:") else 0)
 
 
+async def _clasificar_post_video(texto_usuario: str) -> str:
+    """Clasifica la intención del usuario después de recibir los videos recomendados.
+
+    Retorna:
+      "nuevo_producto" — pregunta por otro producto o tiene otra necesidad de salud.
+      "pausar"         — pregunta por precio/costo, dice que después decide, o cierra la
+                         conversación de forma que no tiene sentido seguir el flujo.
+    """
+    if not OPENAI_API_KEY:
+        return "nuevo_producto"
+
+    prompt = (
+        f"El usuario acaba de recibir los videos de los productos recomendados por WhatsApp. "
+        f"Ahora envía este mensaje: \"{texto_usuario}\"\n\n"
+        "Clasifica el mensaje en UNA de estas categorías:\n"
+        "1. nuevo_producto — el usuario quiere información sobre otro producto, tiene otra "
+        "   necesidad de salud, pregunta algo sobre los productos mostrados, o expresa interés "
+        "   en continuar la conversación.\n"
+        "2. pausar — el usuario pregunta por precio/costo/cuánto vale, dice que después te "
+        "   dice, que lo piensa, que no le interesa por ahora, se despide, o cualquier frase "
+        "   que indique que no desea continuar el flujo de asesoría en este momento.\n\n"
+        "Responde ÚNICAMENTE con 'nuevo_producto' o 'pausar'."
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0,
+                    "max_tokens": 20,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            resp.raise_for_status()
+            resultado = resp.json()["choices"][0]["message"]["content"].strip().lower()
+            clasificacion = "pausar" if "pausar" in resultado else "nuevo_producto"
+            print(f"[PostVideo] clasificacion={clasificacion!r} texto={texto_usuario[:80]!r}")
+            return clasificacion
+    except Exception as e:
+        print(f"[PostVideo] error clasificando: {e}")
+        return "nuevo_producto"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Función principal
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1444,6 +1490,33 @@ async def responder_productos(
                         return "No encontré videos disponibles para esos productos en este momento."
     except Exception as _ve:
         print(f"[VideoHandler] error: {_ve}")
+
+    # ── POST-VIDEO: el bot ya envió los videos y el usuario envía un nuevo mensaje ──
+    # Detectar si el último mensaje del bot fue el envío de videos. Si es así,
+    # clasificar la intención: "nuevo_producto" → reiniciar entrevista (PASO3),
+    # "pausar" → señal de pausa para que main.py detenga el bot en el CRM.
+    try:
+        if historial_texto:
+            all_bot_msgs_pv = re.findall(r"Bot:\s*(.*?)(?=\nUsuario:|\Z)", historial_texto, re.DOTALL)
+            last_bot_pv = (all_bot_msgs_pv[-1] if all_bot_msgs_pv else "").strip()
+            bot_envio_videos = bool(re.search(
+                r"(aquí tienes los videos|aqui tienes los videos"
+                r"|videos de los productos|no encontré videos|no encontre videos)",
+                last_bot_pv, re.IGNORECASE
+            ))
+            if bot_envio_videos:
+                intento_pv = await _clasificar_post_video(texto_usuario)
+                if intento_pv == "pausar":
+                    return {"texto": None, "pausar": True, "motivo": "post_video_cierre_usuario"}
+                # nuevo_producto → reiniciar entrevista clínica (PASO3) para el nuevo tema,
+                # con preguntas_restantes=5 (entrevista fresca).
+                print(f"[PostVideo] nuevo ciclo de indagación para: {texto_usuario[:80]!r}")
+                return await _responder_paso3(
+                    texto_usuario, historial_texto, analisis, intencion,
+                    preguntas_restantes=5,
+                )
+    except Exception as _pv_e:
+        print(f"[PostVideo] error: {_pv_e}")
 
     # ── PASO 1: Primer contacto (sin historial o sin respuesta previa del bot) ─
     if not historial_texto.strip() or _contar_turnos_bot(historial_texto) == 0:
