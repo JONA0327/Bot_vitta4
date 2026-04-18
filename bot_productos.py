@@ -419,14 +419,56 @@ def _all_strings(v, _depth: int = 0) -> list[str]:
 
 
 def _make_absolute_url(url: str) -> str:
-    """Convierte una URL relativa (que empieza con /) en absoluta usando CRM_URL."""
+    """Convierte una URL relativa en absoluta usando CRM_URL.
+
+    Soporta:
+    - URLs absolutas (http/https) → devuelve tal cual
+    - Rutas con / inicial → {CRM_URL}{path}
+    - Rutas relativas sin / (ej. catalog/...) → {CRM_URL}/storage/{path}
+    """
     if url.startswith('http://') or url.startswith('https://'):
         return url
+    _base = CRM_URL or os.getenv('CRM_URL', '').rstrip('/')
+    if not _base:
+        return url
     if url.startswith('/'):
-        _base = CRM_URL or os.getenv('CRM_URL', '').rstrip('/')
-        if _base:
-            return _base + url
-    return url
+        return _base + url
+    # Ruta relativa sin / (paths del disco 'public' de Laravel como catalog/...)
+    return _base + '/storage/' + url
+
+
+def _nombre_producto_limpio(valor) -> str:
+    """Extrae un nombre legible del campo 'producto' del catálogo.
+
+    El campo puede ser:
+    - Un dict con clave 'items': ["Nombre Producto"]
+    - Un string que representa ese dict (Python repr o JSON)
+    - Un string simple
+    """
+    if isinstance(valor, dict):
+        items = valor.get('items') or valor.get('Items') or []
+        if isinstance(items, list) and items:
+            return ', '.join(str(i) for i in items if i)
+        return str(valor.get('categoria') or next(iter(valor.values()), ''))
+    if isinstance(valor, str):
+        # Intentar parsear como JSON
+        try:
+            import json as _j
+            parsed = _j.loads(valor)
+            if isinstance(parsed, dict):
+                return _nombre_producto_limpio(parsed)
+        except Exception:
+            pass
+        # Intentar parsear como Python repr (ast.literal_eval)
+        try:
+            import ast
+            parsed = ast.literal_eval(valor)
+            if isinstance(parsed, dict):
+                return _nombre_producto_limpio(parsed)
+        except Exception:
+            pass
+        return valor
+    return str(valor) if valor else ''
 
 
 def _pick_imagen(p: dict) -> str:
@@ -1368,7 +1410,8 @@ async def responder_productos(
                                 pid = prod_data.get("id", "?")
                                 print(f"[VideoHandler] id={pid} campos={list(datos_layer.keys())[:20]}")
                                 video_url = _pick_video(prod_data)
-                                nombre = str(_pick_field(prod_data, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or f"Producto {pid}")
+                                _nombre_raw = _pick_field(prod_data, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or f"Producto {pid}"
+                                nombre = _nombre_producto_limpio(_nombre_raw) or str(_nombre_raw)
                                 print(f"[VideoHandler] id={pid} nombre={nombre!r} video_url={video_url!r}")
                                 if video_url:
                                     medios.append({"tipo": "video", "url": video_url, "caption": nombre})
