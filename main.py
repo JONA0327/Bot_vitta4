@@ -223,10 +223,13 @@ async def _procesar_y_enviar(data: dict) -> None:
         {"etiqueta": procesado.get("etiqueta"), "intencion": procesado.get("intencion")})
 
     # ── Filtro ────────────────────────────────────────────────────────────────
+    # No pasar thumbnail_url como url_publicidad para mensajes de audio/video;
+    # de lo contrario el filtro detecta pub_facebook=True y sobreescribe la transcripción.
+    _url_publicidad = thumbnail_url if tipo_contenido not in ("audio", "video", "documento") else ""
     clasificacion = await filtrar_y_clasificar(
         mensaje=mensaje,
         tipo_original=tipo_contenido,
-        url_publicidad=thumbnail_url,
+        url_publicidad=_url_publicidad,
         telefono=telefono,
         remote_jid=remote_jid or telefono,
         historial_texto=historial_texto,
@@ -241,7 +244,8 @@ async def _procesar_y_enviar(data: dict) -> None:
         return
 
     # ── Corrección de tipo si filtro detectó Facebook ─────────────────────────
-    if clasificacion["pub_facebook"] and tipo_contenido != "publicacion_facebook":
+    # Excluir audio/video/doc: ya fueron procesados correctamente (transcripción, etc.)
+    if clasificacion["pub_facebook"] and tipo_contenido not in ("publicacion_facebook", "audio", "video", "documento"):
         tipo_contenido = "publicacion_facebook"
         procesado = await procesar_contenido(
             tipo_contenido="publicacion_facebook",
