@@ -280,10 +280,12 @@ async def _procesar_y_enviar(data: dict) -> None:
         f"tipo_intencion={tipo_intencion!r} historial={'sí' if historial_texto else 'no'} flujo={flujo} paso={paso_flujo}")
 
     # ── Antes de generar la respuesta: comprobar si hay pauta activa en el CRM
-    # Se ejecuta tanto para publicaciones de FB como para el primer contacto (historial vacío)
+    # Se ejecuta para publicaciones de FB y para contactos tempranos (bot aún no ha respondido,
+    # es decir _turnos_bot == 0). Usar historial_texto.strip() como proxy era incorrecto porque
+    # el historial puede tener el mensaje del usuario pero aún 0 respuestas del bot.
     try:
         es_fb = clasificacion.get("pub_facebook") or tipo_contenido == "publicacion_facebook"
-        es_primer_contacto = not historial_texto.strip()
+        es_primer_contacto = _turnos_bot == 0   # bot no ha respondido aún → contacto inicial
         if es_fb or es_primer_contacto:
             pautas = await _buscar_pautas_activas(instancia)
             await bot_log(instancia, "info", "Pautas",
