@@ -1105,7 +1105,14 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
     if mensaje_pauta:
         saludo_cap = saludo.capitalize()
         prefijo = f"¡{saludo_cap}! Soy {nombre_bot}, "
-        texto = prefijo + mensaje_pauta.lstrip()
+        # Quitar saludo inicial del mensaje de la pauta si ya hay uno, para no repetirlo
+        _cuerpo_pauta = re.sub(
+            r"^[\s\W]*(¡|!)?\s*(?:hola[,!]?\s*|buenos?\s+(?:d[ií]as?|tardes?|noches?)[,!]?\s*|buenas[,!]?\s*)+",
+            "",
+            mensaje_pauta.lstrip(),
+            flags=re.IGNORECASE,
+        ).lstrip(" ,!\n")
+        texto = prefijo + _cuerpo_pauta
         # Si el mensaje ya pide el nombre, no añadir otra pregunta
         _pide_nombre = re.search(
             r"(tu nombre|cómo te llam|cómo se llam|cómo le llam|con quién tengo el gusto"
