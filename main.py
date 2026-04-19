@@ -179,6 +179,9 @@ def _score_pauta_match(pauta: dict, fb: dict) -> float:
 async def _procesar_y_enviar(data: dict) -> None:
     """Procesa el último mensaje acumulado y lo envía al usuario vía CRM /bot-send."""
     mensaje        = data.get("mensaje", "")
+    # Usar solo el último mensaje individual como user_message al CRM (evita duplicados)
+    _msgs_acum     = data.get("_mensajes_acumulados") or []
+    _ultimo_msg    = _msgs_acum[-1] if _msgs_acum else mensaje
     tipo_contenido = data.get("tipo_contenido", "texto")
     telefono       = data.get("telefono", "desconocido")
     instancia      = data.get("instancia", "")
@@ -319,49 +322,82 @@ async def _procesar_y_enviar(data: dict) -> None:
                     f"mejor={(_pauta_datos(best).get('NOMBRE_PAUTA') or _pauta_datos(best).get('nombre_pauta')) if best else None!r}")
 
                 # Umbrales de decisión:
-                #   FB     : score >= 1.0 (debe coincidir semánticamente con la publicación)
-                #   no-FB  : siempre usar la mejor pauta activa — sin umbral de score.
-                #            Si hay varias pautas activas se toma la de mayor score; si hay
-                #            empate se toma la primera. El administrador configuró esas pautas
-                #            para que se usen en primer contacto aunque no venga de FB.
+                #   FB          : score >= 1.0 (debe coincidir semánticamente con la publicación)
+                #   no-FB 1 pauta: usar el mensaje personalizado de esa pauta.
+                #   no-FB varias: ignorar mensajes individuales; listar todas las líneas/productos
+                #                 en promoción y preguntar por cuál se interesa.
                 usar_pauta = False
                 if best:
                     if es_fb:
                         usar_pauta = best_score >= 1.0
                     else:
-                        usar_pauta = True  # sin FB: usar siempre la mejor pauta activa
+                        usar_pauta = True  # sin FB: usar siempre la(s) pauta(s) activa(s)
 
                 if usar_pauta and best:
-                    _bd = _pauta_datos(best)
-                    matched_msg = _bd.get("MENSAJE") or _bd.get("mensaje") or _bd.get("message") or ""
-                    if matched_msg:
-                        procesado.setdefault("analisis", {})["pauta_detectada"] = best
-                        procesado.setdefault("analisis", {})["mensaje_pauta"] = matched_msg
-                        tipo_pauta = str(_bd.get("TIPO") or _bd.get("tipo") or "").lower()
-                        if "negocio" in tipo_pauta or "afili" in tipo_pauta:
-                            intencion = {"intencion": "negocio", "confianza": 0.95, "productos_mencionados": []}
-                        elif "product" in tipo_pauta or "producto" in tipo_pauta:
-                            intencion = {"intencion": "productos", "confianza": 0.95, "productos_mencionados": []}
-                        else:
-                            alt_int = await analizar_intencion(matched_msg) if matched_msg else None
-                            if alt_int:
-                                intencion = alt_int
-                        pauta_nombre = _bd.get("NOMBRE_PAUTA") or _bd.get("nombre_pauta") or _bd.get("nombre") or ""
+                    # ── Extraer nombre de producto/línea de cada pauta activa ──────────
+                    def _nombre_pauta(p: dict) -> str:
+                        d = _pauta_datos(p)
+                        return (
+                            d.get("LINEA_PRODUCTO") or d.get("linea_producto")
+                            or d.get("NOMBRE_PAUTA") or d.get("nombre_pauta")
+                            or d.get("nombre") or d.get("name") or ""
+                        ).strip()
+
+                    pautas_con_score = [p for _, p in scores if usar_pauta] if not es_fb else [best]
+                    nombres_promocion = []
+                    seen_nombres: set = set()
+                    for _p in pautas_con_score:
+                        _n = _nombre_pauta(_p)
+                        if _n and _n.lower() not in seen_nombres:
+                            seen_nombres.add(_n.lower())
+                            nombres_promocion.append(_n)
+
+                    es_multi_pauta = not es_fb and len(nombres_promocion) > 1
+
+                    if es_multi_pauta:
+                        # Varias pautas activas: generar mensaje de lista de promociones
                         await bot_log(instancia, "info", "Pautas",
-                            f"pauta_USADA nombre={pauta_nombre!r} "
-                            f"score={best_score:.2f} modo={'fb' if es_fb else 'primer_contacto'}")
-                        # Inyectar contexto de la pauta en analisis — la IA formula la respuesta
-                        # La imagen NO se envía; sólo sirve para saber qué productos están activos
-                        procesado.setdefault("analisis", {})["resumen_para_bot"] = matched_msg
-                        _prods_act = procesado["analisis"].get("productos_mencionados") or []
-                        if pauta_nombre and pauta_nombre not in _prods_act:
-                            procesado["analisis"]["productos_mencionados"] = [pauta_nombre] + _prods_act
-                        # Forzar flujo productos para que la IA siempre genere la respuesta
+                            f"multi_pauta ({len(nombres_promocion)}) → listando promociones")
+                        procesado.setdefault("analisis", {})["pautas_multiples"] = nombres_promocion
+                        procesado["analisis"]["resumen_para_bot"] = (
+                            "Actualmente tenemos estas promociones disponibles: "
+                            + ", ".join(nombres_promocion)
+                            + ". Pregunta al cliente por cuál desea información o si le interesa algún otro producto."
+                        )
                         intencion = {
                             "intencion": "productos",
                             "confianza": 0.95,
-                            "productos_mencionados": procesado["analisis"].get("productos_mencionados") or [],
+                            "productos_mencionados": nombres_promocion,
                         }
+                    else:
+                        # Una sola pauta (o FB): usar su mensaje personalizado
+                        _bd = _pauta_datos(best)
+                        matched_msg = _bd.get("MENSAJE") or _bd.get("mensaje") or _bd.get("message") or ""
+                        if matched_msg:
+                            procesado.setdefault("analisis", {})["pauta_detectada"] = best
+                            procesado.setdefault("analisis", {})["mensaje_pauta"] = matched_msg
+                            tipo_pauta = str(_bd.get("TIPO") or _bd.get("tipo") or "").lower()
+                            if "negocio" in tipo_pauta or "afili" in tipo_pauta:
+                                intencion = {"intencion": "negocio", "confianza": 0.95, "productos_mencionados": []}
+                            elif "product" in tipo_pauta or "producto" in tipo_pauta:
+                                intencion = {"intencion": "productos", "confianza": 0.95, "productos_mencionados": []}
+                            else:
+                                alt_int = await analizar_intencion(matched_msg) if matched_msg else None
+                                if alt_int:
+                                    intencion = alt_int
+                            pauta_nombre = _bd.get("NOMBRE_PAUTA") or _bd.get("nombre_pauta") or _bd.get("nombre") or ""
+                            await bot_log(instancia, "info", "Pautas",
+                                f"pauta_USADA nombre={pauta_nombre!r} "
+                                f"score={best_score:.2f} modo={'fb' if es_fb else 'primer_contacto'}")
+                            procesado.setdefault("analisis", {})["resumen_para_bot"] = matched_msg
+                            _prods_act = procesado["analisis"].get("productos_mencionados") or []
+                            if pauta_nombre and pauta_nombre not in _prods_act:
+                                procesado["analisis"]["productos_mencionados"] = [pauta_nombre] + _prods_act
+                            intencion = {
+                                "intencion": "productos",
+                                "confianza": 0.95,
+                                "productos_mencionados": procesado["analisis"].get("productos_mencionados") or [],
+                            }
                 else:
                     await bot_log(instancia, "info", "Pautas",
                         f"no_match_con_pautas count={len(pautas)} best_score={best_score:.2f} "
@@ -492,7 +528,7 @@ async def _procesar_y_enviar(data: dict) -> None:
                 await _enviar(txt, etiqueta, medios=mds)
         return
 
-    await _enviar(respuesta, procesado.get("etiqueta", mensaje[:120]), medios=medios)
+    await _enviar(respuesta, procesado.get("etiqueta", _ultimo_msg[:120]), medios=medios)
 
     if paso3_listo:
         # Enviar mensaje de transición

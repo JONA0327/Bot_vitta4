@@ -152,12 +152,21 @@ Después de este mensaje NUNCA vuelvas a usar su nombre.
 más personalizada, pero que no hay problema si prefiere no compartirlo. Continúa igual.
    - Si no dio nombre ni preguntó nada especial: pasa directamente al siguiente punto sin mencionarlo.
 
-2. Después (con nombre o sin él), haz la PREGUNTA DE INDAGACIÓN que se te indica a continuación.
+2. Después (con nombre o sin él):
+   CASO A — El cliente YA mencionó para qué quiere el producto o qué necesita mejorar \
+(ej. "para la indigestión", "tengo diabetes", "quiero bajar de peso", "me duele la rodilla", etc.):
+   - NO hagas la pregunta de indagación.
+   - En lugar, reconoce brevemente lo que dijo con UNA frase empática y natural \
+(ej. "Ya me quedó claro, quieres apoyo para la indigestión.") y luego haz UNA pregunta más profunda: \
+¿cuiánto tiempo lleva con eso? o ¿cómo le afecta en el día a día? Esto permite ir directo al diagnóstico.
+
+   CASO B — El cliente NO mencionó su necesidad todavía:
    - Antes de la pregunta, añade UNA frase corta y sincera que transmita que realmente te importa \
 ayudar a la persona (ej. "Quiero asegurarme de orientarte bien", "Me interesa entender qué necesitas", \
 "Quiero encontrar lo que de verdad te ayude"). Varía la frase, que suene auténtica y no robótica.
+   - Luego haz la pregunta de indagación:
 
-PREGUNTA DE INDAGACIÓN A USAR:
+PREGUNTA DE INDAGACIÓN A USAR (solo si aplica CASO B):
 {pregunta_indagacion}
 
 REGLAS ADICIONALES:
@@ -1099,6 +1108,19 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
     intencion = intencion or {}
     saludo = _saludo_hora_mexico()
     nombre_bot = instancia.strip() or "4Life"
+
+    # ── Varias pautas activas: listar promociones en vez de usar mensaje individual ──
+    pautas_multiples = analisis.get("pautas_multiples") or []
+    if pautas_multiples:
+        saludo_cap = saludo.capitalize()
+        lista = "\n".join(f"🟢 {n}" for n in pautas_multiples)
+        texto = (
+            f"¡{saludo_cap}! Soy {nombre_bot}, actualmente tenemos estas promociones disponibles:\n\n"
+            f"{lista}\n\n"
+            "¿Te interesa información de alguno de estos productos o de algún otro?"
+            "\n¿Con quién tengo el gusto?"
+        )
+        return texto
 
     # ── Pauta detectada: usar el mensaje personalizado tal cual ───────────────
     mensaje_pauta = analisis.get("mensaje_pauta") or ""
