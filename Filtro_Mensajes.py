@@ -200,12 +200,29 @@ async def filtro_mensaje(mensaje: str) -> str | None:
 _IMAGEN_SYSTEM = (
     "Eres un asistente especializado en analizar imágenes para una empresa distribuidora de 4Life.\n"
     "Determina si la imagen contiene:\n"
-    "- PRODUCTOS: suplementos, vitaminas, productos de salud (lista sus nombres y una breve descripción).\n"
-    "- NEGOCIO: personas, eventos, presentaciones, logos, equipo de trabajo, oportunidad de negocio.\n\n"
+    "- PRODUCTOS: suplementos, vitaminas, productos de salud.\n"
+    "- NEGOCIO: personas, eventos, presentaciones, logos, equipo de trabajo.\n\n"
+    "DISTINCCIÓN CRÍTICA — LÍNEA vs PRODUCTO INDIVIDUAL:\n"
+    "★ LÍNEA: nombre de la gama o categoría (ej: '4Life Digestive', 'Transfer Factor' genérico,\n"
+    "  '4Life Transform', 'Immune'). Si ves un banner, logo o fondo de marca con ese nombre,\n"
+    "  pon ese nombre en nombre_linea y NO en items.\n"
+    "★ PRODUCTO INDIVIDUAL: suplemento concreto con su propio nombre en etiqueta o caja\n"
+    "  (ej: 'PreBiotics', 'Aloe Vera Stix', 'Transfer Factor Plus', 'RioVida', 'Tea4Life').\n"
+    "  Solo incluye en items los productos que puedas LEER visualmente de forma individual.\n\n"
+    "REGLA: Si el banner/logo dice '4Life Digestive' Y hay productos individuales visibles,\n"
+    "  el banner va en nombre_linea y los productos en items.\n"
+    "  Si solo hay banner sin productos individuales legibles, nombre_linea=\"4Life Digestive\", items=[].\n\n"
+    "EJEMPLOS:\n"
+    "  Imagen: banner '4Life Digestive' + cajas 'PreBiotics', 'Aloe Vera Stix'\n"
+    "  → nombre_linea: '4Life Digestive', items: ['PreBiotics','Aloe Vera Stix'] ← CORRECTO\n"
+    "  Imagen: solo banner '4Life Digestive'\n"
+    "  → nombre_linea: '4Life Digestive', items: [] ← CORRECTO\n"
+    "  Imagen: banner '4Life Digestive' sin leer productos\n"
+    "  → items: ['enzimas digestivas','Probiotics'] ← INCORRECTO (inferencia prohibida)\n\n"
     "Responde ÚNICAMENTE con JSON válido:\n"
-    '{"tipo":"productos","descripcion":"descripción general","items":["nombre producto 1","nombre producto 2"]}\n'
+    '{"tipo":"productos","descripcion":"descripción general","nombre_linea":"nombre de la línea o null","items":["nombre producto 1","nombre producto 2"]}\n'
     "o\n"
-    '{"tipo":"negocio","descripcion":"descripción general","items":["elemento relevante 1"]}\n'
+    '{"tipo":"negocio","descripcion":"descripción general","nombre_linea":null,"items":["elemento relevante 1"]}\n'
     "Sin texto adicional."
 )
 
@@ -331,10 +348,27 @@ REGLA ABSOLUTA — SIN EXCEPCIONES:
 ★ Si la imagen no es accesible o no puedes leer nombres, usa el título y descripción del texto — pero únicamente lo que esté escrito ahí, no inferencias.
 ★ Si no puedes confirmar ningún producto individual, reporta sólo el nombre de la línea/marca que aparezca.
 
-EJEMPLO CORRECTO: Imagen muestra cajas con texto "PreBiotics", "Aloe Vera Stix", "Tea4Life"
-→ productos_mencionados: ["PreBiotics","Aloe Vera Stix","Tea4Life"] ← CORRECTO
+DISTINCCIÓN CRÍTICA — LÍNEA vs PRODUCTO INDIVIDUAL:
+★ LÍNEA/GAMA: nombre de la categoría que agrupa varios productos (ej: '4Life Digestive',
+  'Transfer Factor' genérico, '4Life Transform', '4Life Immune', 'Digestive 4Life' como marca).
+  Si ves un banner, fondo o logo de marca, su nombre va en nombre_linea (es_linea: true).
+★ PRODUCTO INDIVIDUAL: cada suplemento concreto con nombre propio en su etiqueta o caja
+  (ej: 'PreBiotics', 'Aloe Vera Stix', 'Transfer Factor Plus', 'RioVida', 'Tea4Life', 'NanoFactor').
+  Solo van en productos_mencionados si puedes LEER su nombre visualmente.
 
-EJEMPLO INCORRECTO: Imagen muestra logo "Digestive 4Life" sin nombres legibles
+REGLA: Si la imagen muestra el banner de una línea Y productos individuales:
+  → nombre_linea = nombre del banner, productos_mencionados = nombres de los productos individuales.
+Si solo hay banner sin productos individuales legibles:
+  → nombre_linea = nombre del banner, productos_mencionados = [].
+NUNCA pongas el nombre de una línea/gama dentro de productos_mencionados.
+
+EJEMPLO CORRECTO: Banner '4Life Digestive' + cajas 'PreBiotics', 'Aloe Vera Stix'
+→ es_linea: true, nombre_linea: "4Life Digestive", productos_mencionados: ["PreBiotics","Aloe Vera Stix"] ← CORRECTO
+
+EJEMPLO CORRECTO: Solo banner '4Life Digestive' sin productos legibles
+→ es_linea: true, nombre_linea: "4Life Digestive", productos_mencionados: [] ← CORRECTO
+
+EJEMPLO INCORRECTO: Banner '4Life Digestive' sin productos legibles
 → productos_mencionados: ["enzimas digestivas","Probiotics","Fiber System Plus"] ← INCORRECTO (inferencia)
 → CORRECTO sería: productos_mencionados: [], nombre_linea: "Digestive 4Life"
 

@@ -121,8 +121,10 @@ Ejemplo de formato correcto (2 líneas máximo):
 ¿Con quién tengo el gusto?"
 
 SI el usuario llegó desde una publicación FB y se te proveen PRODUCTOS DETECTADOS:
-- Menciona 1 o 2 de esos productos por nombre de forma natural (ej. "vi que te interesó el PreBiotics y el Aloe Vera Stix").
-- NO menciones la categoría ni la línea por separado — los nombres de los productos ya comunican todo.
+- Menciona 1 o 2 de esos productos por su nombre COMPLETO exactamente como aparece en la lista (ej. "vi que te interesó el Digestive 4Life y el Aloe Vera Stix").
+- USA el nombre completo del producto siempre que incluya la línea (ej. "Digestive 4Life", NO solo "Digestive").
+- Si el producto tiene un nombre compuesto (ej. "Transfer Factor Plus"), úsalo completo.
+- NO menciones la línea/marca '4Life' por separado como si fuera otro producto — va dentro del nombre.
 - Cierra pidiendo el nombre. Total: máximo 2 líneas.
 
 SI el usuario llegó desde una publicación FB pero NO hay productos específicos:
@@ -219,6 +221,43 @@ def _saludo_hora_mexico() -> str:
         return "buenas noches"
 
 
+# Nombres de LÍNEAS 4Life (gamas): NO son productos individuales.
+# Si la IA los mete en productos_mencionados por error, se filtran.
+_LINEAS_4LIFE_SET: set[str] = {
+    "4life digestive", "digestive 4life",
+    "4life transform", "transform 4life",
+    "4life immune", "immune 4life",
+    "4life energy", "energy 4life",
+    "4life skin", "skin 4life",
+    "4life weight", "transfer factor"  # genérico sin variante = línea
+}
+
+# Mapa de nombres cortos/abreviados → nombre completo oficial del producto 4Life
+_NOMBRES_COMPLETOS_4LIFE: dict[str, str] = {
+    "digestive":        "Digestive 4Life",
+    "prebiotics":       "PreBiotics 4Life",
+    "pre-biotics":      "Pre-Biotics 4Life",
+    "aloe vera":        "Aloe Vera Stix",
+    "belle vie":        "Transfer Factor Belle Vie",
+    "burn":             "4Life Burn",
+    "cardio4life":      "Cardio4Life",
+    "riovida":          "RioVida",
+    "rio vida":         "RioVida",
+    "riolife":          "RioLife",
+    "nanofactor":       "NanoFactor",
+    "tea4life":         "Tea4Life",
+    "tea 4life":        "Tea4Life",
+    "bioeFA":           "BioEFA",
+    "bioefa":           "BioEFA",
+}
+
+
+def _expandir_nombre_producto(nombre: str) -> str:
+    """Devuelve el nombre completo oficial si el nombre recibido es una forma abreviada conocida."""
+    key = nombre.strip().lower()
+    return _NOMBRES_COMPLETOS_4LIFE.get(key, nombre)
+
+
 def _extraer_productos_contexto(analisis: dict, intencion: dict) -> list[str]:
     """Extrae lista de productos detectados de FB/imagen del análisis.
 
@@ -242,7 +281,20 @@ def _extraer_productos_contexto(analisis: dict, intencion: dict) -> list[str]:
         if producto_principal and producto_principal not in productos:
             productos.insert(0, producto_principal)
 
-    # 3. Deduplicar: eliminar términos que sean substring de otro en la lista
+    # 3. Filtrar nombres de LÍNEA que la IA pudo colar como producto
+    #    y también el token suelto "4Life" si ya hay productos con él en el nombre.
+    nombre_linea_analisis = (analisis.get("nombre_linea") or "").lower().strip()
+    productos = [
+        p for p in productos
+        if p.lower().strip() not in _LINEAS_4LIFE_SET
+        and p.lower().strip() != nombre_linea_analisis
+        and p.lower().strip() != "4life"
+    ]
+
+    # 4. Expandir nombres abreviados al nombre completo oficial
+    productos = [_expandir_nombre_producto(p) for p in productos]
+
+    # 5. Deduplicar: eliminar términos que sean substring de otro en la lista
     #    Ej: ["Digest", "Digestive", "Digestive 4Life"] → ["Digestive 4Life"]
     if len(productos) > 1:
         prods_lower = [p.lower() for p in productos]
@@ -1056,24 +1108,33 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
 
         if productos_fb:
             lista_productos = ", ".join(productos_fb[:3])
+            linea_hint = (
+                f"\nLÍNEA A LA QUE PERTENECEN: {nombre_linea} — menciona la línea de forma natural "
+                f"para agrupar los productos (ej: 'vi que te interesó la línea {nombre_linea}, "
+                f"con productos como {lista_productos}')."
+            ) if nombre_linea else ""
             prompt_usuario = (
                 f"Hora del día: {saludo}.\n"
                 f"Tu nombre (preséntate con este nombre): {nombre_bot}.\n"
-                f"PRODUCTOS DETECTADOS de la publicación: {lista_productos}\n"
+                f"PRODUCTOS INDIVIDUALES DETECTADOS: {lista_productos}{linea_hint}\n"
                 "Escribe el saludo siguiendo las instrucciones para 'publicación FB con PRODUCTOS DETECTADOS'. "
-                "Menciona 1 o 2 de los productos por nombre de forma natural. "
-                "NO menciones la categoría ni la línea por separado. "
+                "Menciona los productos INDIVIDUALES por nombre; si hay línea, úsala para agruparlos. "
                 "NO menciones '4Life' como marca aislada ni 'generar ingresos'. "
                 "Un solo emoji al final si encaja."
             )
         else:
-            tema_salud = contexto_usuario or resumen_fb or (f"la línea {nombre_linea}" if nombre_linea else "sus productos de salud")
+            # Solo línea detectada, sin productos individuales
+            tema_salud = (
+                f"la línea {nombre_linea}" if nombre_linea
+                else (contexto_usuario or resumen_fb or "sus productos de salud")
+            )
             prompt_usuario = (
                 f"Hora del día: {saludo}.\n"
                 f"Tu nombre (preséntate con este nombre): {nombre_bot}.\n"
-                f"CONTEXTO: El usuario llegó desde una publicación con este tema de salud: {tema_salud}\n"
+                f"CONTEXTO: El usuario llegó desde una publicación sobre: {tema_salud}\n"
                 "Escribe el saludo siguiendo las instrucciones para 'publicación FB sin productos específicos'. "
-                "Reconoce el interés en salud de forma natural, sin mencionar productos ni '4Life' como marca. "
+                "Menciona el tema/línea de forma natural, sin enumerar productos individuales. "
+                "NO menciones '4Life' como marca aislada ni 'generar ingresos'. "
                 "Un solo emoji al final si encaja."
             )
     else:
