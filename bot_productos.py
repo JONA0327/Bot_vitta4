@@ -1112,6 +1112,16 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
             mensaje_pauta.lstrip(),
             flags=re.IGNORECASE,
         ).lstrip(" ,!\n")
+        # Quitar frases que hagan alusión a la pauta/anuncio/publicación
+        _cuerpo_pauta = re.sub(
+            r"[^.!?\n]*\b(?:vi(?:ste)?|respond(?:iste|ió)|lleg(?:aste|ó)|contesta(?:ste|ó)|"
+            r"hiciste clic|diste clic|te interesó|te llegó|encontraste|a través de|desde)"
+            r"[^.!?\n]*\b(?:anuncio|pauta|publicaci[oó]n|campa[ñn]a|post|ad\b|promoci[oó]n)"
+            r"[^.!?\n]*[.!?\n]?",
+            "",
+            _cuerpo_pauta,
+            flags=re.IGNORECASE,
+        ).strip()
         texto = prefijo + _cuerpo_pauta
         # Si el mensaje ya pide el nombre, no añadir otra pregunta
         _pide_nombre = re.search(
