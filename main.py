@@ -396,7 +396,9 @@ async def _procesar_y_enviar(data: dict) -> None:
             except Exception as exc:
                 await bot_log(instancia, "error", "BotSend", f"Error en bot-send: {exc}")
 
-        await _enviar_pauta(_respuesta_pauta_directa, procesado.get("etiqueta", mensaje[:120]), medios=_medios_pauta_directa)
+        # Si hay imagen, el mensaje ya va como caption → no enviar el texto por separado
+        _texto_envio_pauta = "" if _medios_pauta_directa else _respuesta_pauta_directa
+        await _enviar_pauta(_texto_envio_pauta, procesado.get("etiqueta", mensaje[:120]), medios=_medios_pauta_directa)
         return
 
     resultado = None
