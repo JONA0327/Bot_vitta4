@@ -427,7 +427,7 @@ async def _procesar_y_enviar(data: dict) -> None:
         if resultado.get("pausar"):
             motivo = resultado.get("motivo", "sin_productos_catalogo")
             await bot_log(instancia, "info", "Bot",
-                f"PASO4 sin productos en catálogo ({motivo}) → pausando tel={telefono}")
+                f"pausando conversación motivo={motivo!r} tel={telefono}")
             try:
                 from Historial_Conversacion import IrrelevantConversationModel
             except ImportError:

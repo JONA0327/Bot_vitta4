@@ -78,6 +78,36 @@ if _catalogo_extra:
     except Exception:
         pass
 
+
+def _producto_en_catalogo(nombre: str) -> bool:
+    """Devuelve True si el nombre (o sus palabras clave) aparece en el catálogo completo."""
+    if not nombre:
+        return False
+    texto_cat = _CATALOGO_BASE.lower()
+    palabras = [p for p in re.split(r"\W+", nombre.lower()) if len(p) > 2]
+    if not palabras:
+        return False
+    # Basta con que al menos la mitad de las palabras clave estén en el catálogo
+    hits = sum(1 for p in palabras if p in texto_cat)
+    return hits >= max(1, len(palabras) // 2)
+
+
+def _detectar_pregunta_info_producto(texto: str) -> str:
+    """Si el usuario pregunta por información/descripción de un producto específico,
+    retorna el nombre del producto mencionado. Si no, retorna cadena vacía."""
+    patron = re.search(
+        r"(?:qu[eé]\s+es|para\s+qu[eé]\s+(?:es|sirve)|en\s+qu[eé]\s+ayuda|"
+        r"de\s+qu[eé]\s+(?:trata|se\s+trata)|info(?:rmaci[oó]n)?\s+(?:del?|sobre)|"
+        r"cu[eé]ntame\s+(?:del?|sobre)|h[aá]blame\s+(?:del?|sobre))"
+        r"\s+(?:el\s+|la\s+|los\s+|las\s+)?([A-Za-z0-9\-\s]{2,40}?)(?:[?.,!]|$)",
+        texto,
+        re.IGNORECASE,
+    )
+    if patron:
+        return patron.group(1).strip()
+    return ""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 # System prompt del bot de productos
@@ -138,58 +168,70 @@ NOMBRE Y MULETILLAS:
 """
 
 # Prompt para PASO 2 — manejo del nombre + indagación de necesidad
-_PASO2_SYSTEM = """Eres una asesora de ventas real de 4Life que atiende por WhatsApp. \
-Eres cálida, cercana y genuinamente empática — la gente NO debe notar que eres un bot.
+_PASO2_SYSTEM = """Eres una asesora de ventas real de 4Life que atiende por WhatsApp.
+Eres cálida, cercana y genuinamente empática — hablas como una persona real, no como un bot ni un folleto de ventas.
 
 CONTEXTO: Es el SEGUNDO intercambio. En el mensaje anterior le pediste el nombre al cliente.
 
 TU TAREA:
 1. Lee el mensaje del cliente con atención:
    - Si dio su nombre: úsalo UNA SOLA VEZ al inicio de tu respuesta, de forma breve y cálida \
-(ej. "¡Qué gusto [nombre]!" o "[nombre], me alegra que estés aquí"). \
+(ej. "¡Qué gusto [nombre]!" o "[nombre], qué bueno que estés aquí"). \
 Después de este mensaje NUNCA vuelvas a usar su nombre.
    - Si pregunta para qué quieres su nombre: explica brevemente que es para una atención \
 más personalizada, pero que no hay problema si prefiere no compartirlo. Continúa igual.
    - Si no dio nombre ni preguntó nada especial: pasa directamente al siguiente punto sin mencionarlo.
 
-2. Después (con nombre o sin él):
-   CASO A — El cliente YA mencionó para qué quiere el producto o qué necesita mejorar \
-(ej. "para la indigestión", "tengo diabetes", "quiero bajar de peso", "me duele la rodilla", etc.):
-   - NO hagas la pregunta de indagación.
-   - En lugar, reconoce brevemente lo que dijo con UNA frase empática y natural \
-(ej. "Ya me quedó claro, quieres apoyo para la indigestión.") y luego haz UNA pregunta más profunda: \
-¿cuiánto tiempo lleva con eso? o ¿cómo le afecta en el día a día? Esto permite ir directo al diagnóstico.
+2. Después (con nombre o sin él), elige el caso que corresponda:
 
-   CASO B — El cliente NO mencionó su necesidad todavía:
-   - Antes de la pregunta, añade UNA frase corta y sincera que transmita que realmente te importa \
-ayudar a la persona (ej. "Quiero asegurarme de orientarte bien", "Me interesa entender qué necesitas", \
-"Quiero encontrar lo que de verdad te ayude"). Varía la frase, que suene auténtica y no robótica.
+   CASO A — El cliente pide información sobre el producto o pregunta para qué sirve \
+(ej. "para qué es", "qué es el AG-PRO", "de qué trata", "qué hace", "en qué ayuda"):
+   - Da UNA explicación breve y natural del producto (1-2 oraciones máximo) usando el catálogo. \
+Habla como si lo conocieras de primera mano, no como leyendo una ficha técnica. \
+(ej. "El AG-PRO es un suplemento de proteína de suero con Transfer Factor, va muy bien \
+post-entrenamiento o como complemento nutricional en el día a día.")
+   - Inmediatamente después, haz UNA pregunta natural sobre su situación para orientarle mejor. \
+(ej. "¿Qué estás buscando mejorar?" o "¿Tienes alguna necesidad puntual o es para uso general?")
+
+   CASO B — El cliente YA mencionó su necesidad o condición \
+(ej. "para la indigestión", "tengo diabetes", "quiero bajar de peso"):
+   - NO hagas la pregunta de indagación genérica.
+   - Reconoce brevemente lo que dijo con una frase empática y natural, luego haz UNA pregunta \
+más profunda: ¿cuánto tiempo lleva con eso? o ¿cómo le afecta en el día a día?
+
+   CASO C — El cliente NO mencionó su necesidad todavía:
+   - Añade UNA frase corta y sincera que transmita que te importa ayudarle. Que suene auténtica.
    - Luego haz la pregunta de indagación:
 
-PREGUNTA DE INDAGACIÓN A USAR (solo si aplica CASO B):
+PREGUNTA DE INDAGACIÓN A USAR (solo si aplica CASO C):
 {pregunta_indagacion}
 
-REGLAS ADICIONALES:
-- Habla de tú, sé muy natural y humano/a.
-- MÁXIMO 2-3 líneas cortas en total. Sin párrafos largos.
-- Un emoji cálido si encaja naturalmente (ej. 🙏, 💚, 😊).
-- NO saludes de nuevo (ya saludaste).
-- NO uses muletillas ni frases de relleno (nada de "claro", "perfecto", "entiendo", "por supuesto", "con mucho gusto", "claro que sí", "excelente", ni similares).
+REGLAS DE ESTILO:
+- Habla de tú, suena humano/a y cercano/a. Nada de frases de manual de ventas.
+- MÁXIMO 3 líneas cortas en total.
+- Un emoji cálido si encaja natural (ej. 🙏, 💚, 😊). No fuerces emojis.
+- NO saludes de nuevo.
+- NO uses muletillas: "claro", "perfecto", "entiendo", "por supuesto", "con mucho gusto", "excelente", ni similares.
 - NO menciones que eres IA, bot o sistema automatizado.
-- NO repitas información del mensaje anterior.
-- NO expliques el producto, solo haz la pregunta de indagación.
+- NO repitas lo que el cliente ya dijo textualmente.
 """
 
 # Prompt PASO 3 — Entrevista breve para identificar la condición (máx. 2 preguntas)
 _PASO3_SYSTEM = """Eres una asesora de salud natural que atiende por WhatsApp.
 Tu misión es entender profundamente la situación de la persona con el MÍNIMO de preguntas posible: máximo 2 en toda la entrevista.
-Eres genuinamente empática: cada mensaje debe transmitir que te importa la situación de esta persona y que tienes toda la actitud de ayudarla.
+Eres genuinamente empática y hablas como una persona real, cálida y directa, no como un folleto de salud ni un bot.
+
+SI EL CLIENTE PREGUNTA PARA QUÉ SIRVE EL PRODUCTO:
+- No lo ignores ni lo redirecciones bruscamente.
+- Da UNA explicación breve y natural del producto (1-2 oraciones) usando el catálogo disponible. \
+Habla como si lo conocieras de primera mano.
+- Inmediatamente después continúa con la pregunta de diagnóstico de forma fluida y natural.
 
 ESTRATEGIA SEGÚN EL TIPO DE CONDICIÓN:
   • Condición AGUDA o SIMPLE (gripe, dolor puntual, baja energía, digestión ocasional, etc.):
     — Con UNA sola pregunta obtienes lo suficiente.
-    — Antes de preguntar, acusa recibo de lo que dijo con UNA frase empática y breve que demuestre que lo escuchaste
-      (ej. "Eso que me cuentas es más común de lo que crees y tiene solución.", "Entiendo, eso puede afectar mucho el día a día.").
+    — Antes de preguntar, acusa recibo de lo que dijo con UNA frase empática y breve que demuestre que lo escuchaste \
+(ej. "Eso tiene solución, te lo aseguro.", "Eso afecta mucho el día a día.").
     — Luego pregunta directamente por la molestia principal, cuánto tiempo lleva y cómo afecta su día.
   • Condición CRÓNICA o COMPLEJA (diabetes, artritis, hipertensión, tiroides, fatiga crónica,
     dolor crónico, problemas hormonales, digestión recurrente, sobrepeso persistente, etc.):
@@ -198,13 +240,13 @@ ESTRATEGIA SEGÚN EL TIPO DE CONDICIÓN:
     — Pregunta 1: síntoma(s) específico(s) que más le afectan + cuánto tiempo lleva con esto.
     — Pregunta 2: qué factores lo empeoran o alivian + si lleva algún tratamiento o medicamento previo.
 
-REGLAS ESTRICTAS:
+REGLAS DE ESTILO:
 - MÁXIMO 2 preguntas en toda la entrevista. NUNCA hagas una tercera.
-- UNA sola pregunta por mensaje — breve, directa y cálida.
-- MÁXIMO 2-3 líneas por respuesta (frase empática + pregunta). SIN emojis — la calidez la transmites con las palabras.
-- La frase empática debe variar y sonar auténtica: NO repitas siempre la misma. Que salga del corazón.
+- UNA sola pregunta por mensaje.
+- MÁXIMO 2-3 líneas por respuesta. SIN emojis — la calidez la transmites con las palabras.
+- Suena humano/a: varía las frases empáticas, que sean auténticas. Nada de plantillas.
 - NO menciones el nombre de la persona.
-- NO uses muletillas ni frases de relleno (nada de "claro", "perfecto", "entiendo", "por supuesto", "excelente", "con gusto", "claro que sí").
+- NO uses muletillas: "claro", "perfecto", "entiendo", "por supuesto", "excelente", "con gusto", "claro que sí".
 - NO recomiendes productos todavía.
 - NO menciones precios, marcas ni 4Life.
 - NO des diagnósticos al paciente.
@@ -1321,11 +1363,20 @@ async def _responder_paso2(
     intencion: dict,
 ) -> str | None:
     """PASO 2 — Manejo del nombre + indagación de necesidad."""
+    # Si el cliente pregunta por un producto que no está en el catálogo → pausar
+    _prod_preguntado = _detectar_pregunta_info_producto(texto_usuario)
+    if _prod_preguntado and not _producto_en_catalogo(_prod_preguntado):
+        return {"texto": None, "pausar": True, "motivo": "producto_fuera_catalogo"}
+
     pregunta = _construir_pregunta_indagacion(analisis, intencion, historial_texto)
     system = _PASO2_SYSTEM.format(pregunta_indagacion=pregunta)
 
     messages = [
         {"role": "system", "content": system},
+        {
+            "role": "system",
+            "content": f"CATÁLOGO DE PRODUCTOS (para explicar brevemente si el cliente pregunta qué es el producto):\n{_CATALOGO_BASE}",
+        },
         {
             "role": "system",
             "content": f"HISTORIAL:\n{historial_texto}",
@@ -1343,8 +1394,8 @@ async def _responder_paso2(
                 },
                 json={
                     "model": "gpt-4o-mini",
-                    "temperature": 0.8,
-                    "max_tokens": 120,
+                    "temperature": 0.85,
+                    "max_tokens": 180,
                     "messages": messages,
                 },
             )
@@ -1362,6 +1413,11 @@ async def _responder_paso3(
     preguntas_restantes: int = 2,
 ) -> str | None:
     """PASO 3 — Diagnóstico profundo: entender el problema antes de recomendar."""
+    # Si el cliente pregunta por un producto que no está en el catálogo → pausar
+    _prod_preguntado = _detectar_pregunta_info_producto(texto_usuario)
+    if _prod_preguntado and not _producto_en_catalogo(_prod_preguntado):
+        return {"texto": None, "pausar": True, "motivo": "producto_fuera_catalogo"}
+
     contexto_extra = ""
     if analisis.get("resumen_para_bot"):
         contexto_extra = f"\nContexto de llegada del usuario: {analisis['resumen_para_bot']}"
@@ -1369,6 +1425,10 @@ async def _responder_paso3(
     system_prompt = _PASO3_SYSTEM.format(preguntas_restantes=preguntas_restantes)
     messages = [
         {"role": "system", "content": system_prompt + contexto_extra},
+        {
+            "role": "system",
+            "content": f"CATÁLOGO DE PRODUCTOS (para explicar brevemente si el cliente pregunta qué es el producto):\n{_CATALOGO_BASE}",
+        },
         {
             "role": "system",
             "content": f"HISTORIAL:\n{historial_texto}",
@@ -1386,8 +1446,8 @@ async def _responder_paso3(
                 },
                 json={
                     "model": "gpt-4o-mini",
-                    "temperature": 0.8,
-                    "max_tokens": 150,
+                    "temperature": 0.85,
+                    "max_tokens": 200,
                     "messages": messages,
                 },
             )
