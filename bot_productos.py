@@ -94,6 +94,8 @@ INSTRUCCIONES:
 - Siempre termina con un llamado a la acción (CTA): "¿Te gustaría saber más?", "¿Quieres que te envíe info?", etc.
 - Responde en el mismo idioma que el usuario (español por defecto).
 - Máximo 3 párrafos cortos. Usa emojis ocasionalmente para WhatsApp.
+- NO uses muletillas ni frases de relleno: "claro que sí", "por supuesto", "entiendo perfectamente", "con mucho gusto", "perfecto", "excelente", "sin duda", ni similares.
+- NO repitas el nombre del cliente durante la conversación.
 
 CATÁLOGO DISPONIBLE:
 {_CATALOGO_BASE}
@@ -126,6 +128,11 @@ SI el usuario llegó desde una publicación FB y se te proveen PRODUCTOS DETECTA
 SI el usuario llegó desde una publicación FB pero NO hay productos específicos:
 - Reconoce su interés en el TEMA DE SALUD en UNA sola frase natural, sin mencionar nombres de productos.
 - Pide su nombre al final. Total: máximo 2 líneas.
+
+NOMBRE Y MULETILLAS:
+- Tu nombre (de la asesora): pronúncialo solo en este primer mensaje, al inicio del saludo.
+- El nombre del cliente: úsalo UNA sola vez en el segundo mensaje al reconocer que lo compartió. NUNCA más en el resto de la conversación.
+- NO uses muletillas ni frases de relleno en ningún mensaje (nada de "claro", "claro que sí", "perfecto", "excelente", "entiendo", "por supuesto", "con mucho gusto", "me alegra que preguntes", etc.).
 """
 
 # Prompt para PASO 2 — manejo del nombre + indagación de necesidad
@@ -136,9 +143,10 @@ CONTEXTO: Es el SEGUNDO intercambio. En el mensaje anterior le pediste el nombre
 
 TU TAREA:
 1. Lee el mensaje del cliente con atención:
-   - Si dio su nombre: reconócelo de forma natural y cálida \
-(ej. "¡Qué gusto [nombre]!" o "Gracias [nombre] 😊"). Usa su nombre de ahora en adelante.
-   - Si pregunta para qué quieres su nombre: explica brevemente que es para darle una atención \
+   - Si dio su nombre: úsalo UNA SOLA VEZ al inicio de tu respuesta, de forma breve y cálida \
+(ej. "¡Qué gusto [nombre]!" o "[nombre], me alegra que estés aquí"). \
+Después de este mensaje NUNCA vuelvas a usar su nombre.
+   - Si pregunta para qué quieres su nombre: explica brevemente que es para una atención \
 más personalizada, pero que no hay problema si prefiere no compartirlo. Continúa igual.
    - Si no dio nombre ni preguntó nada especial: pasa directamente al siguiente punto sin mencionarlo.
 
@@ -152,42 +160,41 @@ REGLAS ADICIONALES:
 - MÁXIMO 2 líneas cortas en total. Sin párrafos largos.
 - Un emoji como mucho.
 - NO saludes de nuevo (ya saludaste).
+- NO uses muletillas ni frases de relleno (nada de "claro", "perfecto", "entiendo", "por supuesto", "con mucho gusto", "claro que sí", "excelente", ni similares).
 - NO menciones que eres IA, bot o sistema automatizado.
 - NO repitas información del mensaje anterior.
 - NO expliques el producto, solo haz la pregunta de indagación.
 """
 
-# Prompt PASO 3 — Entrevista clínica estructurada para identificar la condición
-_PASO3_SYSTEM = """Eres una especialista en salud natural con formación clínica que atiende por WhatsApp.
-Tu misión es realizar una ENTREVISTA CLÍNICA ESTRUCTURADA para identificar con la mayor precisión
-posible la condición de salud del paciente ANTES de recomendar cualquier producto.
-NO eres médico y NO debes dar diagnósticos médicos al paciente — eso es tarea interna del sistema.
-Tu función aquí es recopilar información clínica completa haciendo UNA pregunta a la vez.
+# Prompt PASO 3 — Entrevista breve para identificar la condición (máx. 2 preguntas)
+_PASO3_SYSTEM = """Eres una asesora de salud natural que atiende por WhatsApp.
+Tu misión es entender la situación de la persona con el MÍNIMO de preguntas posible: máximo 2 en toda la entrevista.
 
-METODOLOGÍA CLÍNICA (sigue este orden según lo que ya tienes en el historial):
-  1. Síntoma PRINCIPAL: ¿Qué molestia exacta sientes? (pide descripción detallada si es vaga)
-  2. LOCALIZACIÓN: ¿Dónde exactamente lo sientes? ¿Se extiende o irradia a otro lugar?
-  3. TEMPORALIDAD: ¿Cuánto tiempo llevas así? ¿Es constante o va y viene? ¿Con qué frecuencia?
-  4. INTENSIDAD e IMPACTO: ¿Qué tanto afecta tu vida diaria? (del 1 al 10, o descríbelo)
-  5. FACTORES: ¿Qué lo empeora? ¿Qué lo alivia? ¿En qué momento del día es peor?
-  6. SÍNTOMAS ASOCIADOS: ¿Tienes otros síntomas que aparecen junto con este? (sueño, digestión, ánimo, etc.)
-  7. HISTORIAL: ¿Te han dado algún diagnóstico médico? ¿Has tomado algo — medicamento o suplemento — antes?
+ESTRATEGIA SEGÚN EL TIPO DE CONDICIÓN:
+  • Condición AGUDA o SIMPLE (gripe, dolor puntual, baja energía, digestión ocasional, etc.):
+    — Con UNA sola pregunta obtienes lo suficiente.
+    — Pregunta directamente por la molestia principal, cuánto tiempo lleva y cómo afecta su día.
+  • Condición CRÓNICA o COMPLEJA (diabetes, artritis, hipertensión, tiroides, fatiga crónica,
+    dolor crónico, problemas hormonales, digestión recurrente, sobrepeso persistente, etc.):
+    — Usa exactamente 2 preguntas para obtener el contexto completo.
+    — Pregunta 1: síntoma(s) específico(s) que más le afectan + cuánto tiempo lleva con esto.
+    — Pregunta 2: qué factores lo empeoran o alivian + si lleva algún tratamiento o medicamento previo.
 
 REGLAS ESTRICTAS:
-- Haz SIEMPRE solo UNA pregunta por mensaje. Corta, específica y cálida.
+- MÁXIMO 2 preguntas en toda la entrevista. NUNCA hagas una tercera.
+- UNA sola pregunta por mensaje — breve, directa y cálida.
 - MÁXIMO 2 líneas por respuesta. SIN emojis — la calidez la transmites con las palabras.
+- NO menciones el nombre de la persona.
+- NO uses muletillas ni frases de relleno (nada de "claro", "perfecto", "entiendo", "por supuesto", "excelente", "con gusto", "claro que sí").
 - NO recomiendes productos todavía.
 - NO menciones precios, marcas ni 4Life.
-- NO des diagnósticos al paciente — solo recaba información.
-- REVISA el historial antes de preguntar; JAMÁS repitas una pregunta ya respondida.
-- Si una respuesta es muy vaga o ambigua, profundiza con una pregunta de aclaración antes de avanzar.
+- NO des diagnósticos al paciente.
+- REVISA el historial; NUNCA repitas una pregunta ya respondida.
 - PREGUNTAS RESTANTES: {preguntas_restantes}. Cuando llegues a 0 usa [[LISTO]] obligatoriamente.
 
-CUANDO TENGAS INFORMACIÓN SUFICIENTE (mínimo: síntoma principal + duración + factores + impacto):
+CUANDO TENGAS INFORMACIÓN SUFICIENTE O LAS PREGUNTAS SE AGOTEN:
 - Inicia tu respuesta con la línea exacta: [[LISTO]]
-- Luego escribe un mensaje corto y empático de transición, sin emojis, ej:
-  "Con todo lo que me compartiste ya tengo lo necesario para orientarte bien."
-- Usa [[LISTO]] también cuando se agoten las preguntas restantes, aunque no lo tengas todo.
+- Escribe 1 frase corta de transición, sin emojis. Ej: "Con lo que me compartiste ya puedo orientarte bien."
 """
 
 # Señal que el bot incluye cuando PASO 3 está completo
@@ -1227,7 +1234,7 @@ async def _responder_paso3(
     historial_texto: str,
     analisis: dict,
     intencion: dict,
-    preguntas_restantes: int = 5,
+    preguntas_restantes: int = 2,
 ) -> str | None:
     """PASO 3 — Diagnóstico profundo: entender el problema antes de recomendar."""
     contexto_extra = ""
@@ -1430,7 +1437,7 @@ async def responder_productos(
                 all_bot_msgs = re.findall(r"Bot:\s*(.*?)(?=\nUsuario:|\Z)", historial_texto, re.DOTALL)
                 last_bot_full = (all_bot_msgs[-1] if all_bot_msgs else "").strip()
                 bot_asked_video = bool(ids_marker) or bool(
-                    re.search(r"video|vídeo", last_bot_full, re.IGNORECASE)
+                    re.search(r"deseas ver|quieres ver|responde \*?s[ií]\*?", last_bot_full, re.IGNORECASE)
                 )
                 if bot_asked_video:
                     medios = []
@@ -1508,15 +1515,30 @@ async def responder_productos(
                 intento_pv = await _clasificar_post_video(texto_usuario)
                 if intento_pv == "pausar":
                     return {"texto": None, "pausar": True, "motivo": "post_video_cierre_usuario"}
-                # nuevo_producto → reiniciar entrevista clínica (PASO3) para el nuevo tema,
-                # con preguntas_restantes=5 (entrevista fresca).
+                # nuevo_producto → reiniciar entrevista clínica (PASO3) para el nuevo tema.
                 print(f"[PostVideo] nuevo ciclo de indagación para: {texto_usuario[:80]!r}")
                 return await _responder_paso3(
                     texto_usuario, historial_texto, analisis, intencion,
-                    preguntas_restantes=5,
+                    preguntas_restantes=2,
                 )
     except Exception as _pv_e:
         print(f"[PostVideo] error: {_pv_e}")
+
+    # ── DETECCIÓN TEMPRANA DE PRECIO: pausar en cualquier etapa antes de PASO4 ──
+    # Si el usuario pregunta precio/costo al inicio o durante la entrevista,
+    # ya conoce los productos → pausar para que lo atienda un humano.
+    _precio_pattern = re.compile(
+        r"\b(precio|costo|cuánto|cuanto|cuánto cuesta|cuanto cuesta|cuánto vale|cuanto vale"
+        r"|cuánto es|cuanto es|cuánto cobr|cuanto cobr|cuánto están|cuanto están"
+        r"|cuánto tiene|cuanto tiene|cuál es el precio|cual es el precio"
+        r"|a cuánto|a cuanto|valor|tarifa|inversión|inversion|cotiza"
+        r"|qué precio|que precio|dame el precio|quiero saber el precio"
+        r"|cuánto me sale|cuanto me sale|sale el|cuánto sale|cuanto sale)\b",
+        re.IGNORECASE,
+    )
+    if _precio_pattern.search(texto_usuario):
+        print(f"[PrecioTemprano] precio detectado antes de PASO4 → pausando")
+        return {"texto": None, "pausar": True, "motivo": "precio_temprano"}
 
     # ── PASO 1: Primer contacto (sin historial o sin respuesta previa del bot) ─
     if not historial_texto.strip() or _contar_turnos_bot(historial_texto) == 0:
@@ -1528,36 +1550,32 @@ async def responder_productos(
 
     # ── PASO 3: Diagnóstico profundo (hasta que el bot tenga suficiente info) ─
     # Se detecta el fin de PASO 3 por la presencia del marcador en historial
-    # o cuando se alcanza el límite duro de 5 preguntas
+    # o cuando se alcanza el límite duro de 2 preguntas
     _MARKER_PASO3_DONE = "Estoy examinando tu situación"
     preguntas_paso3 = max(0, _contar_turnos_bot(historial_texto) - 2)
-    preguntas_restantes = max(0, 5 - preguntas_paso3)
-    if _MARKER_PASO3_DONE not in historial_texto and preguntas_paso3 < 5:
+    preguntas_restantes = max(0, 2 - preguntas_paso3)
+    if _MARKER_PASO3_DONE not in historial_texto and preguntas_paso3 < 2:
         return await _responder_paso3(
             texto_usuario, historial_texto, analisis, intencion,
             preguntas_restantes=preguntas_restantes,
         )
 
-    # ── POST-RECOMENDACIÓN: el bot ya envió la ficha de productos (PASO4) ──────
-    # Si el último mensaje del bot contiene "¿Deseas ver un video" (marcador de PASO4
-    # completado) y el usuario responde "no", pregunta precio u otro cierre →
-    # pausar la conversación sin re-enviar los productos.
-    try:
-        if historial_texto:
-            _all_bot_pr = re.findall(r"Bot:\s*(.*?)(?=\nUsuario:|\Z)", historial_texto, re.DOTALL)
-            _last_bot_pr = (_all_bot_pr[-1] if _all_bot_pr else "").strip()
-            _bot_envio_recom = bool(re.search(
-                r"deseas ver un video|quieres ver un video|te interesa ver el video",
-                _last_bot_pr, re.IGNORECASE
-            ))
-            if _bot_envio_recom:
-                _intento_pr = await _clasificar_post_video(texto_usuario)
-                if _intento_pr == "pausar":
-                    print(f"[PostRecom] usuario cerró tras recomendación → pausar")
-                    return {"texto": None, "pausar": True, "motivo": "post_video_cierre_usuario"}
-                # nuevo_producto → dejar caer en PASO4 para una nueva recomendación
-    except Exception as _pr_e:
-        print(f"[PostRecom] error: {_pr_e}")
+    # ── POST-PASO4: Si ya se enviaron productos, pausar ante CUALQUIER mensaje ──
+    # Señales que indican que PASO4 ya corrió y envió la información:
+    #   a) marcador [[PRODUTOS_IDS:...]] en el historial (productos sin video)
+    #   b) frase “Te comparto los videos” (envío automático de videos)
+    #   c) tarjetas de producto en formato negrita Bot: *Nombre*\n (JSON path)
+    _paso4_ya_envio = (
+        bool(re.search(r"\[\[PRODUTOS_IDS:", historial_texto))
+        or bool(re.search(r"te comparto los videos", historial_texto, re.IGNORECASE))
+        or (
+            _MARKER_PASO3_DONE in historial_texto
+            and bool(re.search(r"Bot:.*\*[A-Za-záéíóúÁÉÍÓÚñÑ]", historial_texto))
+        )
+    )
+    if _paso4_ya_envio:
+        print(f"[PostP4] productos ya enviados → pausando")
+        return {"texto": None, "pausar": True, "motivo": "post_recomendacion"}
 
     # ── PASO 4: Recomendación de productos (PASO 3 ya completado) ─────────────
     # Paso 4a — Analizar la entrevista PASO3 para extraer síntomas/condición/términos de búsqueda
@@ -1719,22 +1737,38 @@ async def responder_productos(
                                   f"img={'base64({} chars)'.format(len(img_url)) if es_b64_img else repr(img_url)}")
                             prod_medios = [{"tipo": "imagen", "url": img_url, "caption": prod_nombre}] if img_url else []
                             mensagens.append({"texto": f"*{prod_nombre}*\n{prod_desc}", "medios": prod_medios})
-                        video_q = "¿Deseas ver un video de los productos recomendados? Responde *sí* para recibir los videos."
-                        mensagens.append({"texto": video_q + ("\n" + ids_marker if ids_marker else "")})
+                        # Enviar videos automáticamente sin preguntar
+                        _video_medios: list[dict] = []
+                        for _p in productos_catalogo[:6]:
+                            _v_url = _pick_video(_p)
+                            if _v_url:
+                                _vn_raw = _pick_field(_p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
+                                _v_nombre = _nombre_producto_limpio(_vn_raw) or str(_vn_raw)
+                                _video_medios.append({"tipo": "video", "url": _v_url, "caption": _v_nombre})
+                        if _video_medios:
+                            mensagens.append({"texto": "Te comparto los videos de los productos recomendados 🎥", "medios": _video_medios})
+                        elif ids_marker:
+                            mensagens.append({"texto": ids_marker})
                         return {"mensagens": mensagens}
                 except Exception as _je:
                     print(f"[PASO4] JSON parse error: {_je} — usando texto plano")
 
-                # Fallback: texto plano
+                # Fallback: texto plano — enviar imágenes y videos automáticamente
                 recomendacion = raw_content
-                if not re.search(r"video|vídeo", recomendacion, re.IGNORECASE):
-                    recomendacion += "\n\n¿Deseas ver un video de los productos? Responde sí para recibirlos."
+                # Incluir ids_marker en el texto para que el historial tenga señal de PASO4 completado
                 if ids_marker:
                     recomendacion += "\n" + ids_marker
-                # En fallback, enviar imágenes junto al texto
+                _video_medios_fb: list[dict] = []
+                for _p in productos_catalogo[:6]:
+                    _v_url = _pick_video(_p)
+                    if _v_url:
+                        _vn_raw = _pick_field(_p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
+                        _v_nombre = _nombre_producto_limpio(_vn_raw) or str(_vn_raw)
+                        _video_medios_fb.append({"tipo": "video", "url": _v_url, "caption": _v_nombre})
                 medios_imagenes_fallback = [{"tipo": "imagen", "url": url, "caption": n} for n, url in img_map.items()]
-                if medios_imagenes_fallback:
-                    return {"texto": recomendacion, "medios": medios_imagenes_fallback}
+                medios_todos_fb = medios_imagenes_fallback + _video_medios_fb
+                if medios_todos_fb:
+                    return {"texto": recomendacion, "medios": medios_todos_fb}
                 return recomendacion
         except Exception as _e:
             print(f"[PASO4] error LLM: {_e}")
