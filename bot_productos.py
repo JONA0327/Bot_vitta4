@@ -184,14 +184,9 @@ más personalizada, pero que no hay problema si prefiere no compartirlo. Contin�
 
 2. Después (con nombre o sin él), elige el caso que corresponda:
 
-   CASO A — El cliente pide información sobre el producto o pregunta para qué sirve \
-(ej. "para qué es", "qué es el AG-PRO", "de qué trata", "qué hace", "en qué ayuda"):
-   - Da UNA explicación breve y natural del producto (1-2 oraciones máximo) usando el catálogo. \
-Habla como si lo conocieras de primera mano, no como leyendo una ficha técnica. \
-(ej. "El AG-PRO es un suplemento de proteína de suero con Transfer Factor, va muy bien \
-post-entrenamiento o como complemento nutricional en el día a día.")
-   - Inmediatamente después, haz UNA pregunta natural sobre su situación para orientarle mejor. \
-(ej. "¿Qué estás buscando mejorar?" o "¿Tienes alguna necesidad puntual o es para uso general?")
+   CASO A — El cliente pide información sobre el producto o pregunta para qué sirve:
+   - NO des una explicación del producto. Sigue el flujo normal de indagación.
+   - Continúa con la pregunta de indagación (igual que CASO C) para entender su necesidad antes de hablar de productos.
 
    CASO B — El cliente YA mencionó su necesidad o condición \
 (ej. "para la indigestión", "tengo diabetes", "quiero bajar de peso"):
@@ -222,10 +217,8 @@ Tu misión es entender profundamente la situación de la persona con el MÍNIMO 
 Eres genuinamente empática y hablas como una persona real, cálida y directa, no como un folleto de salud ni un bot.
 
 SI EL CLIENTE PREGUNTA PARA QUÉ SIRVE EL PRODUCTO:
-- No lo ignores ni lo redirecciones bruscamente.
-- Da UNA explicación breve y natural del producto (1-2 oraciones) usando el catálogo disponible. \
-Habla como si lo conocieras de primera mano.
-- Inmediatamente después continúa con la pregunta de diagnóstico de forma fluida y natural.
+- NO des explicaciones del producto todavía. Sigue el flujo normal de diagnóstico.
+- Continúa con la pregunta de diagnóstico correspondiente de forma natural.
 
 ESTRATEGIA SEGÚN EL TIPO DE CONDICIÓN:
   • Condición AGUDA o SIMPLE (gripe, dolor puntual, baja energía, digestión ocasional, etc.):
@@ -1363,11 +1356,6 @@ async def _responder_paso2(
     intencion: dict,
 ) -> str | None:
     """PASO 2 — Manejo del nombre + indagación de necesidad."""
-    # Si el cliente pregunta por un producto que no está en el catálogo → pausar
-    _prod_preguntado = _detectar_pregunta_info_producto(texto_usuario)
-    if _prod_preguntado and not _producto_en_catalogo(_prod_preguntado):
-        return {"texto": None, "pausar": True, "motivo": "producto_fuera_catalogo"}
-
     pregunta = _construir_pregunta_indagacion(analisis, intencion, historial_texto)
     system = _PASO2_SYSTEM.format(pregunta_indagacion=pregunta)
 
@@ -1413,11 +1401,6 @@ async def _responder_paso3(
     preguntas_restantes: int = 2,
 ) -> str | None:
     """PASO 3 — Diagnóstico profundo: entender el problema antes de recomendar."""
-    # Si el cliente pregunta por un producto que no está en el catálogo → pausar
-    _prod_preguntado = _detectar_pregunta_info_producto(texto_usuario)
-    if _prod_preguntado and not _producto_en_catalogo(_prod_preguntado):
-        return {"texto": None, "pausar": True, "motivo": "producto_fuera_catalogo"}
-
     contexto_extra = ""
     if analisis.get("resumen_para_bot"):
         contexto_extra = f"\nContexto de llegada del usuario: {analisis['resumen_para_bot']}"

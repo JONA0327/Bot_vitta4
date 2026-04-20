@@ -98,6 +98,52 @@ def _pauta_datos(pauta: dict) -> dict:
     return pauta
 
 
+def _filtrar_pautas_por_telefono(pautas: list, telefono: str) -> list:
+    """Filtra las pautas que tienen el número de WhatsApp del contacto en alguno de sus campos.
+
+    Busca en campos típicos: TELEFONO, NUMEROS, WHATSAPP, NUMERO, NUMERO_WHATSAPP (y variantes
+    en minúscula). El valor puede ser un string con uno o varios números separados por coma,
+    espacio, punto y coma o salto de línea.
+
+    Retorna solo las pautas que contienen ese número; lista vacía si ninguna coincide.
+    """
+    if not telefono or not pautas:
+        return []
+
+    _CAMPOS = (
+        "TELEFONO", "telefono", "NUMEROS", "numeros",
+        "WHATSAPP", "whatsapp", "NUMERO", "numero",
+        "NUMERO_WHATSAPP", "numero_whatsapp",
+        "PHONE", "phone", "PHONES", "phones",
+    )
+
+    # Normalizar el teléfono: solo dígitos, sin prefijos de país duplicados comunes
+    tel_norm = re.sub(r"\D", "", telefono)
+
+    coincidentes = []
+    for pauta in pautas:
+        d = _pauta_datos(pauta)
+        for campo in _CAMPOS:
+            valor = d.get(campo)
+            if not valor:
+                continue
+            # Extraer todos los números del campo
+            numeros_campo = re.split(r"[,;\s\n]+", str(valor))
+            for num in numeros_campo:
+                num_norm = re.sub(r"\D", "", num.strip())
+                if not num_norm:
+                    continue
+                # Comparación flexible: sufijo coincide (maneja prefijos de país distintos)
+                if tel_norm.endswith(num_norm) or num_norm.endswith(tel_norm):
+                    coincidentes.append(pauta)
+                    break
+            else:
+                continue
+            break  # ya encontramos coincidencia en este campo, pasar a la siguiente pauta
+
+    return coincidentes
+
+
 def _word_overlap(a: str, b: str) -> float:
     """Fraction of words in the shorter string that appear in the longer string."""
     wa = set(a.split())
@@ -292,49 +338,17 @@ async def _procesar_y_enviar(data: dict) -> None:
             await bot_log(instancia, "info", "Pautas",
                 f"consultando pautas activas count={len(pautas)} es_fb={bool(es_fb)} es_primer_contacto={es_primer_contacto}")
             if pautas:
-                analisis_data = procesado.get("analisis") or {}
-                # Para FB usamos los campos de la publicación.
-                # Para mensajes no-FB usamos el texto del usuario como "descripcion" para el scoring,
-                # lo que permite comparar contra el contenido/mensaje de las pautas.
-                fb_info = {
-                    "titulo": titulo_fb or "",
-                    "descripcion": descripcion_fb or texto_para_bot,   # ← clave: fallback al texto del usuario
-                    "productos_mencionados": analisis_data.get("productos_mencionados") or analisis_data.get("items") or [],
-                    "nombre_linea": analisis_data.get("nombre_linea") or "",
-                    "imagen": thumbnail_url or url_media,
-                }
+                # Solo se usa la pauta si el número del contacto está registrado en ella.
+                # Si ninguna pauta tiene el número, se continúa el flujo sin pauta.
+                pautas_por_tel = _filtrar_pautas_por_telefono(pautas, telefono)
+                if not pautas_por_tel:
+                    await bot_log(instancia, "info", "Pautas",
+                        f"sin_coincidencia_telefono tel={telefono} → flujo sin pauta")
+                else:
+                    best = pautas_por_tel[0]
+                    await bot_log(instancia, "info", "Pautas",
+                        f"filtro_telefono: {len(pautas_por_tel)} pauta(s) para tel={telefono} → usando pauta")
 
-                # Calcular score para TODAS las pautas
-                scores: list[tuple[float, dict]] = []
-                for p in pautas:
-                    try:
-                        s = _score_pauta_match(p, fb_info)
-                    except Exception:
-                        s = 0.0
-                    scores.append((s, p))
-                scores.sort(key=lambda x: x[0], reverse=True)
-
-                best_score, best = scores[0] if scores else (0.0, None)
-                second_score = scores[1][0] if len(scores) > 1 else 0.0
-
-                await bot_log(instancia, "info", "Pautas",
-                    f"scores top2: {best_score:.2f} / {second_score:.2f} "
-                    f"mejor={(_pauta_datos(best).get('NOMBRE_PAUTA') or _pauta_datos(best).get('nombre_pauta')) if best else None!r}")
-
-                # Umbrales de decisión:
-                #   FB          : score >= 1.0 (debe coincidir semánticamente con la publicación)
-                #   no-FB 1 pauta: usar el mensaje personalizado de esa pauta.
-                #   no-FB varias: ignorar mensajes individuales; listar todas las líneas/productos
-                #                 en promoción y preguntar por cuál se interesa.
-                usar_pauta = False
-                if best:
-                    if es_fb:
-                        usar_pauta = best_score >= 1.0
-                    else:
-                        usar_pauta = True  # sin FB: usar siempre la(s) pauta(s) activa(s)
-
-                if usar_pauta and best:
-                    # ── Extraer nombre de producto/línea de cada pauta activa ──────────
                     def _nombre_pauta(p: dict) -> str:
                         d = _pauta_datos(p)
                         return (
@@ -343,19 +357,17 @@ async def _procesar_y_enviar(data: dict) -> None:
                             or d.get("nombre") or d.get("name") or ""
                         ).strip()
 
-                    pautas_con_score = [p for _, p in scores if usar_pauta] if not es_fb else [best]
                     nombres_promocion = []
                     seen_nombres: set = set()
-                    for _p in pautas_con_score:
+                    for _p in pautas_por_tel:
                         _n = _nombre_pauta(_p)
                         if _n and _n.lower() not in seen_nombres:
                             seen_nombres.add(_n.lower())
                             nombres_promocion.append(_n)
 
-                    es_multi_pauta = not es_fb and len(nombres_promocion) > 1
+                    es_multi_pauta = len(nombres_promocion) > 1
 
                     if es_multi_pauta:
-                        # Varias pautas activas: generar mensaje de lista de promociones
                         await bot_log(instancia, "info", "Pautas",
                             f"multi_pauta ({len(nombres_promocion)}) → listando promociones")
                         procesado.setdefault("analisis", {})["pautas_multiples"] = nombres_promocion
@@ -370,7 +382,6 @@ async def _procesar_y_enviar(data: dict) -> None:
                             "productos_mencionados": nombres_promocion,
                         }
                     else:
-                        # Una sola pauta (o FB): usar su mensaje personalizado
                         _bd = _pauta_datos(best)
                         matched_msg = _bd.get("MENSAJE") or _bd.get("mensaje") or _bd.get("message") or ""
                         if matched_msg:
@@ -387,8 +398,7 @@ async def _procesar_y_enviar(data: dict) -> None:
                                     intencion = alt_int
                             pauta_nombre = _bd.get("NOMBRE_PAUTA") or _bd.get("nombre_pauta") or _bd.get("nombre") or ""
                             await bot_log(instancia, "info", "Pautas",
-                                f"pauta_USADA nombre={pauta_nombre!r} "
-                                f"score={best_score:.2f} modo={'fb' if es_fb else 'primer_contacto'}")
+                                f"pauta_USADA nombre={pauta_nombre!r} modo=telefono")
                             procesado.setdefault("analisis", {})["resumen_para_bot"] = matched_msg
                             _prods_act = procesado["analisis"].get("productos_mencionados") or []
                             if pauta_nombre and pauta_nombre not in _prods_act:
@@ -398,10 +408,6 @@ async def _procesar_y_enviar(data: dict) -> None:
                                 "confianza": 0.95,
                                 "productos_mencionados": procesado["analisis"].get("productos_mencionados") or [],
                             }
-                else:
-                    await bot_log(instancia, "info", "Pautas",
-                        f"no_match_con_pautas count={len(pautas)} best_score={best_score:.2f} "
-                        f"second_score={second_score:.2f} es_fb={bool(es_fb)}")
     except Exception as e:
         await bot_log(instancia, "error", "Pautas", f"Error checando pautas: {e}")
 
