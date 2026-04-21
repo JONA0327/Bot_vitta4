@@ -1650,7 +1650,7 @@ async def responder_productos(
                 all_bot_msgs = re.findall(r"Bot:\s*(.*?)(?=\nUsuario:|\Z)", historial_texto, re.DOTALL)
                 last_bot_full = (all_bot_msgs[-1] if all_bot_msgs else "").strip()
                 bot_asked_video = bool(ids_marker) or bool(
-                    re.search(r"deseas ver|quieres ver|responde \*?s[ií]\*?", last_bot_full, re.IGNORECASE)
+                    re.search(r"deseas ver|quieres ver|deseas que te comparta|responde \*?s[ií]\*?", last_bot_full, re.IGNORECASE)
                 )
                 if bot_asked_video:
                     medios = []
@@ -1708,6 +1708,22 @@ async def responder_productos(
                         return {"texto": "Aquí tienes los videos de los productos recomendados 🎥", "medios": medios}
                     else:
                         return "No encontré videos disponibles para esos productos en este momento."
+
+            # Detectar si el usuario rechaza los videos ("no")
+            user_no = bool(re.search(
+                r"^\s*no\b|no gracias|no quiero|no,? gracias|^nope|^nel\b|^paso\b",
+                texto_usuario.strip().lower()
+            ))
+            if user_no:
+                all_bot_msgs_no = re.findall(r"Bot:\s*(.*?)(?=\nUsuario:|\Z)", historial_texto, re.DOTALL)
+                last_bot_no = (all_bot_msgs_no[-1] if all_bot_msgs_no else "").strip()
+                bot_pregunto_video = bool(re.search(
+                    r"deseas que te comparta los videos|deseas ver los videos|quieres ver los videos",
+                    last_bot_no, re.IGNORECASE
+                ))
+                if bot_pregunto_video:
+                    print(f"[VideoHandler] usuario rechazó los videos → pausando")
+                    return {"texto": None, "pausar": True, "motivo": "rechazo_videos"}
     except Exception as _ve:
         print(f"[VideoHandler] error: {_ve}")
 
@@ -1784,7 +1800,7 @@ async def responder_productos(
     #   c) tarjetas de producto en formato negrita Bot: *Nombre*\n (JSON path)
     _paso4_ya_envio = (
         bool(re.search(r"\[\[PRODUTOS_IDS:", historial_texto))
-        or bool(re.search(r"te comparto los videos", historial_texto, re.IGNORECASE))
+        or bool(re.search(r"te comparto los videos|deseas que te comparta los videos", historial_texto, re.IGNORECASE))
         or (
             _MARKER_PASO3_DONE in historial_texto
             and bool(re.search(r"Bot:.*\*[A-Za-záéíóúÁÉÍÓÚñÑ]", historial_texto))
@@ -1954,38 +1970,29 @@ async def responder_productos(
                                   f"img={'base64({} chars)'.format(len(img_url)) if es_b64_img else repr(img_url)}")
                             prod_medios = [{"tipo": "imagen", "url": img_url, "caption": prod_nombre}] if img_url else []
                             mensagens.append({"texto": f"*{prod_nombre}*\n{prod_desc}", "medios": prod_medios})
-                        # Enviar videos automáticamente sin preguntar
-                        _video_medios: list[dict] = []
-                        for _p in productos_catalogo[:6]:
-                            _v_url = _pick_video(_p)
-                            if _v_url:
-                                _vn_raw = _pick_field(_p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
-                                _v_nombre = _nombre_producto_limpio(_vn_raw) or str(_vn_raw)
-                                _video_medios.append({"tipo": "video", "url": _v_url, "caption": _v_nombre})
-                        if _video_medios:
-                            mensagens.append({"texto": "Te comparto los videos de los productos recomendados 🎥", "medios": _video_medios})
+                        # Preguntar si desea ver los videos (solo si hay alguno disponible)
+                        _hay_videos = any(_pick_video(_p) for _p in productos_catalogo[:6])
+                        if ids_marker and _hay_videos:
+                            mensagens.append({"texto": f"¿Deseas que te comparta los videos sobre los productos? {ids_marker}"})
                         elif ids_marker:
                             mensagens.append({"texto": ids_marker})
                         return {"mensagens": mensagens}
                 except Exception as _je:
                     print(f"[PASO4] JSON parse error: {_je} — usando texto plano")
 
-                # Fallback: texto plano — enviar imágenes y videos automáticamente
+                # Fallback: texto plano — preguntar si desea ver los videos
                 recomendacion = raw_content
-                # Incluir ids_marker en el texto para que el historial tenga señal de PASO4 completado
+                _hay_videos_fb = any(_pick_video(_p) for _p in productos_catalogo[:6])
+                medios_imagenes_fallback = [{"tipo": "imagen", "url": url, "caption": n} for n, url in img_map.items()]
+                if ids_marker and _hay_videos_fb:
+                    pregunta_video = f"¿Deseas que te comparta los videos sobre los productos? {ids_marker}"
+                    if medios_imagenes_fallback:
+                        return {"mensagens": [{"texto": recomendacion, "medios": medios_imagenes_fallback}, {"texto": pregunta_video}]}
+                    return {"mensagens": [{"texto": recomendacion}, {"texto": pregunta_video}]}
                 if ids_marker:
                     recomendacion += "\n" + ids_marker
-                _video_medios_fb: list[dict] = []
-                for _p in productos_catalogo[:6]:
-                    _v_url = _pick_video(_p)
-                    if _v_url:
-                        _vn_raw = _pick_field(_p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
-                        _v_nombre = _nombre_producto_limpio(_vn_raw) or str(_vn_raw)
-                        _video_medios_fb.append({"tipo": "video", "url": _v_url, "caption": _v_nombre})
-                medios_imagenes_fallback = [{"tipo": "imagen", "url": url, "caption": n} for n, url in img_map.items()]
-                medios_todos_fb = medios_imagenes_fallback + _video_medios_fb
-                if medios_todos_fb:
-                    return {"texto": recomendacion, "medios": medios_todos_fb}
+                if medios_imagenes_fallback:
+                    return {"texto": recomendacion, "medios": medios_imagenes_fallback}
                 return recomendacion
         except Exception as _e:
             print(f"[PASO4] error LLM: {_e}")
