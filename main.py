@@ -35,6 +35,19 @@ RESPUESTA_PRUEBA = os.getenv(
 # Segundos de espera antes de procesar (0 = sin debounce)
 DEBOUNCE_SECS = int(os.getenv("BOT_DEBOUNCE_SECS", "20"))
 
+# Etiquetas que el bot envía al CRM al pausar la conversación.
+# Se almacenan únicamente en BD (nivel sistema, no en WhatsApp).
+# Configura en .env según el nombre que quieras ver en el CRM.
+_ETIQUETA_CIERRE = os.getenv("BOT_ETIQUETA_CIERRE", "Cierre")
+_ETIQUETA_PAUSA  = os.getenv("BOT_ETIQUETA_PAUSA",  "Pausa")
+# Motivos que corresponden a un cierre definitivo (sin intención de retomar)
+_MOTIVOS_CIERRE  = {
+    "precio_temprano",
+    "rechazo_videos",
+    "post_video_cierre_usuario",
+    "post_recomendacion",
+}
+
 # ── Estado de debounce (clave = "instancia:telefono") ────────────────────────
 _pending_tasks: dict[str, asyncio.Task] = {}
 _pending_data: dict[str, dict] = {}
@@ -445,6 +458,7 @@ async def _procesar_y_enviar(data: dict) -> None:
                 if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN):
                     return
                 _jid = remote_jid or telefono
+                _etiqueta = _ETIQUETA_CIERRE if motivo in _MOTIVOS_CIERRE else _ETIQUETA_PAUSA
                 try:
                     async with httpx.AsyncClient(timeout=10) as client:
                         await client.post(
@@ -456,6 +470,7 @@ async def _procesar_y_enviar(data: dict) -> None:
                                 "Motivo_Bloqueo": motivo,
                                 "tipo_bloqueo":   "irrelevante",
                                 "instancia":      instancia,
+                                "etiqueta":       _etiqueta,
                             },
                         )
                 except Exception as exc:

@@ -842,6 +842,31 @@ Content-Type: application/json
 | `prompt_injection` | Igual que `inapropiado`                                                  |
 | `irrelevante`      | Pausa el bot (no responde más) sin bloquear el contacto en WhatsApp      |
 
+#### Campo `etiqueta` (solo para `tipo_bloqueo: irrelevante`)
+
+Cuando el tipo es `irrelevante` puedes incluir el campo opcional `etiqueta` para clasificar
+la pausa a nivel sistema. El CRM la guarda tal cual en la columna `etiqueta` de
+`irrelevant_conversations` — no la interpreta ni la procesa.
+
+```json
+{
+  "Numero_Baneado": "5214444416578",
+  "Numero_Remote":  "521444416578@s.whatsapp.net",
+  "Motivo_Bloqueo": "rechazo_videos",
+  "tipo_bloqueo":   "irrelevante",
+  "instancia":      "mi-instancia",
+  "etiqueta":       "Cierre"
+}
+```
+
+> **Diseño multi-bot:** el CRM no define ni conoce los nombres de etiquetas. Es el bot
+> quien decide qué etiqueta enviar según su propio contexto. Esto permite conectar
+> cualquier bot al CRM sin tener que configurar etiquetas en el panel.
+>
+> **En Bot_vitta4** las etiquetas se configuran con las variables de entorno:
+> - `BOT_ETIQUETA_CIERRE` (default `Cierre`) — para motivos de rechazo/post-venta
+> - `BOT_ETIQUETA_PAUSA` (default `Pausa`) — para motivos sin catálogo u otros
+
 ---
 
 ### 6.5 Entrenamiento del bot
