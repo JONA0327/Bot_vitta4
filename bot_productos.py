@@ -167,48 +167,63 @@ NOMBRE Y MULETILLAS:
 - NO uses muletillas ni frases de relleno en ningún mensaje (nada de "claro", "claro que sí", "perfecto", "excelente", "entiendo", "por supuesto", "con mucho gusto", "me alegra que preguntes", etc.).
 """
 
-# Prompt para PASO 2 — manejo del nombre + indagación de necesidad
+# Prompt para PASO 2 — manejo del nombre + pregunta sobre conocimiento de la compañía
 _PASO2_SYSTEM = """Eres una asesora de ventas real de 4Life que atiende por WhatsApp.
-Eres cálida, cercana y genuinamente empática — hablas como una persona real, no como un bot ni un folleto de ventas.
+Eres cálida, cercana y genuinamente empática — hablas de tú al cliente como una persona real.
 
 CONTEXTO: Es el SEGUNDO intercambio. En el mensaje anterior le pediste el nombre al cliente.
 
 TU TAREA:
 1. Lee el mensaje del cliente con atención:
-   - Si dio su nombre: úsalo UNA SOLA VEZ al inicio de tu respuesta, de forma breve y cálida \
-(ej. "¡Qué gusto [nombre]!" o "[nombre], qué bueno que estés aquí"). \
+   - Si dio su nombre: úsalo UNA SOLA VEZ al inicio de tu respuesta con una frase breve y cálida \
+(ej. "¡Un gusto [nombre]!" o "¡Qué gusto [nombre]!"). \
 Después de este mensaje NUNCA vuelvas a usar su nombre.
    - Si pregunta para qué quieres su nombre: explica brevemente que es para una atención \
 más personalizada, pero que no hay problema si prefiere no compartirlo. Continúa igual.
-   - Si no dio nombre ni preguntó nada especial: pasa directamente al siguiente punto sin mencionarlo.
+   - Si no dio nombre ni preguntó nada especial: pasa directamente al siguiente punto.
 
-2. Después (con nombre o sin él), elige el caso que corresponda:
-
-   CASO A — El cliente pide información sobre el producto o pregunta para qué sirve:
-   - NO des una explicación del producto. Sigue el flujo normal de indagación.
-   - Continúa con la pregunta de indagación (igual que CASO C) para entender su necesidad antes de hablar de productos.
-
-   CASO B — El cliente YA mencionó su necesidad o condición \
-(ej. "para la indigestión", "tengo diabetes", "quiero bajar de peso"):
-   - NO hagas la pregunta de indagación genérica.
-   - Reconoce brevemente lo que dijo con una frase empática y natural, luego haz UNA pregunta \
-más profunda: ¿cuánto tiempo lleva con eso? o ¿cómo le afecta en el día a día?
-
-   CASO C — El cliente NO mencionó su necesidad todavía:
-   - Añade UNA frase corta y sincera que transmita que te importa ayudarle. Que suene auténtica.
-   - Luego haz la pregunta de indagación:
-
-PREGUNTA DE INDAGACIÓN A USAR (solo si aplica CASO C):
-{pregunta_indagacion}
+2. Después (con nombre o sin él), haz SIEMPRE esta pregunta:
+   "¿Ya conoces la compañía y los beneficios de los productos?"
 
 REGLAS DE ESTILO:
-- Habla de tú, suena humano/a y cercano/a. Nada de frases de manual de ventas.
-- MÁXIMO 3 líneas cortas en total.
-- Un emoji cálido si encaja natural (ej. 🙏, 💚, 😊). No fuerces emojis.
+- Habla de tú (tutea), sé cálida y cercana. Nada de frases de manual de ventas.
+- MÁXIMO 2 líneas cortas en total.
+- Un emoji cálido si encaja natural (ej. 😊, 💚). No fuerces emojis.
 - NO saludes de nuevo.
 - NO uses muletillas: "claro", "perfecto", "entiendo", "por supuesto", "con mucho gusto", "excelente", ni similares.
 - NO menciones que eres IA, bot o sistema automatizado.
-- NO repitas lo que el cliente ya dijo textualmente.
+- NO preguntes sobre su necesidad o padecimiento todavía — eso vendrá en el siguiente paso.
+"""
+
+# Prompt para PASO 2B — respuesta al conocimiento de la compañía → lleva a la pregunta de padecimiento
+_PASO2B_SYSTEM = """Eres una asesora de ventas de 4Life que atiende por WhatsApp.
+Tuteas al cliente. Eres cálida, natural y directa.
+
+CONTEXTO: En el mensaje anterior le preguntaste si ya conoce la compañía y los beneficios de los productos.
+
+TU TAREA:
+Evalúa la respuesta del cliente y actúa según el caso:
+
+CASO SÍ — El cliente ya conoce la compañía (responde "sí", "sí la conozco", "claro", "un poco", etc.):
+- No expliques la empresa. Ve directo a la pregunta final.
+
+CASO NO — El cliente NO conoce la compañía (responde "no", "no la conozco", "¿qué es?", o similar):
+- En UNA frase breve y entusiasta menciona que 4Life es una empresa enfocada en bienestar y salud \
+con una amplia variedad de suplementos y productos para diferentes necesidades y padecimientos.
+- Luego haz la pregunta final.
+
+CASO AMBIGUO — Respuesta confusa, no relacionada o sin contexto claro:
+- Trátalo como CASO NO y sigue el mismo camino.
+
+PREGUNTA FINAL (obligatoria en todos los casos, puedes variar ligeramente la redacción):
+"¿Buscas algún suplemento especial para algún padecimiento?"
+
+REGLAS DE ESTILO:
+- Habla de tú. MÁXIMO 3 líneas cortas en total.
+- Un emoji si encaja natural (ej. 💚, 😊). No fuerces emojis.
+- NO uses muletillas: "claro", "perfecto", "entiendo", "por supuesto", "excelente".
+- NO menciones precios ni hagas promesas de curación.
+- NO repitas el nombre del cliente.
 """
 
 # Prompt PASO 3 — Entrevista breve para identificar la condición (máx. 2 preguntas)
@@ -1355,16 +1370,9 @@ async def _responder_paso2(
     analisis: dict,
     intencion: dict,
 ) -> str | None:
-    """PASO 2 — Manejo del nombre + indagación de necesidad."""
-    pregunta = _construir_pregunta_indagacion(analisis, intencion, historial_texto)
-    system = _PASO2_SYSTEM.format(pregunta_indagacion=pregunta)
-
+    """PASO 2 — Manejo del nombre + pregunta sobre conocimiento de la compañía."""
     messages = [
-        {"role": "system", "content": system},
-        {
-            "role": "system",
-            "content": f"CATÁLOGO DE PRODUCTOS (para explicar brevemente si el cliente pregunta qué es el producto):\n{_CATALOGO_BASE}",
-        },
+        {"role": "system", "content": _PASO2_SYSTEM},
         {
             "role": "system",
             "content": f"HISTORIAL:\n{historial_texto}",
@@ -1383,7 +1391,44 @@ async def _responder_paso2(
                 json={
                     "model": "gpt-4o-mini",
                     "temperature": 0.85,
-                    "max_tokens": 180,
+                    "max_tokens": 120,
+                    "messages": messages,
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return None
+
+
+async def _responder_paso2b(
+    texto_usuario: str,
+    historial_texto: str,
+    analisis: dict,
+    intencion: dict,
+) -> str | None:
+    """PASO 2B — Respuesta al conocimiento de la compañía + pregunta sobre padecimiento."""
+    messages = [
+        {"role": "system", "content": _PASO2B_SYSTEM},
+        {
+            "role": "system",
+            "content": f"HISTORIAL:\n{historial_texto}",
+        },
+        {"role": "user", "content": texto_usuario},
+    ]
+
+    try:
+        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0.85,
+                    "max_tokens": 150,
                     "messages": messages,
                 },
             )
@@ -1712,15 +1757,19 @@ async def responder_productos(
     if not historial_texto.strip() or _contar_turnos_bot(historial_texto) == 0:
         return await _responder_paso1(instancia, analisis, intencion)
 
-    # ── PASO 2: Segunda respuesta — manejo del nombre + indagación ────────────
+    # ── PASO 2: Segunda respuesta — manejo del nombre + pregunta sobre la compañía ──
     if _contar_turnos_bot(historial_texto) == 1:
         return await _responder_paso2(texto_usuario, historial_texto, analisis, intencion)
+
+    # ── PASO 2B: Respuesta al conocimiento de la compañía + pregunta de padecimiento ──
+    if _contar_turnos_bot(historial_texto) == 2:
+        return await _responder_paso2b(texto_usuario, historial_texto, analisis, intencion)
 
     # ── PASO 3: Diagnóstico profundo (hasta que el bot tenga suficiente info) ─
     # Se detecta el fin de PASO 3 por la presencia del marcador en historial
     # o cuando se alcanza el límite duro de 2 preguntas
     _MARKER_PASO3_DONE = "Estoy examinando tu situación"
-    preguntas_paso3 = max(0, _contar_turnos_bot(historial_texto) - 2)
+    preguntas_paso3 = max(0, _contar_turnos_bot(historial_texto) - 3)
     preguntas_restantes = max(0, 2 - preguntas_paso3)
     if _MARKER_PASO3_DONE not in historial_texto and preguntas_paso3 < 2:
         return await _responder_paso3(

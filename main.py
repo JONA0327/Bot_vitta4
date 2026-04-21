@@ -319,6 +319,8 @@ async def _procesar_y_enviar(data: dict) -> None:
         paso_flujo = "PASO1"
     elif _turnos_bot == 1:
         paso_flujo = "PASO2"
+    elif _turnos_bot == 2:
+        paso_flujo = "PASO2B"
     elif _MARKER_PASO3 not in historial_texto:
         paso_flujo = f"PASO3-entrevista (turnos_bot={_turnos_bot})"
     else:
