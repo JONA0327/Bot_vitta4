@@ -15,6 +15,7 @@ load_dotenv()
 from fastapi import FastAPI, HTTPException, Request
 
 from BotLogger import CRM_API_TOKEN, CRM_TENANT, CRM_URL, bot_log
+import bot_productos as _bot_productos_module
 from bot_productos import responder_productos
 from Filtro_Mensajes import (
     _descargar_imagen_base64,
@@ -26,6 +27,47 @@ from Filtro_Mensajes import (
 from Historial_Conversacion import formatear_historial_para_ia, obtener_historial
 
 app = FastAPI(title="Bot Vitta4", version="1.0.0")
+
+# ── Reglas del Bot (cargadas desde el CRM al arrancar) ───────────────────────
+# Diccionario vacío = sin reglas extra (el bot funciona con solo sus prompts base).
+# Se puebla en el startup event desde GET /api/v1/{tenant}/bot-reglas.
+BOT_REGLAS: dict = {}
+
+
+async def _cargar_reglas_bot() -> None:
+    """Carga el JSON de reglas activas desde el CRM y lo almacena en BOT_REGLAS.
+    Si el endpoint no está disponible o no hay reglas configuradas, BOT_REGLAS
+    queda vacío y el bot funciona normalmente con sus prompts base.
+    """
+    global BOT_REGLAS
+    _url    = CRM_URL    or os.getenv("CRM_URL",    "").rstrip("/")
+    _tenant = CRM_TENANT or os.getenv("CRM_TENANT", "")
+    _token  = CRM_API_TOKEN or os.getenv("CRM_API_TOKEN", "")
+    if not _url or not _tenant or not _token:
+        print("[Reglas] CRM no configurado — sin reglas extra.")
+        return
+    endpoint = f"{_url}/api/v1/{_tenant}/bot-reglas"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(endpoint, headers={"X-API-Key": _token})
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict) and data:
+                BOT_REGLAS = data
+                version = data.get("version", "?")
+                n_rest  = len(data.get("restricciones_globales", []))
+                print(f"[Reglas] v{version} cargada — {n_rest} restricciones globales.")
+                # Propagar al módulo del bot para que se inyecte en los prompts
+                _bot_productos_module._REGLAS_ACTIVAS = BOT_REGLAS
+            else:
+                print("[Reglas] Sin reglas configuradas en el CRM.")
+    except Exception as e:
+        print(f"[Reglas] No se pudo cargar — el bot usará prompts base. ({e})")
+
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    await _cargar_reglas_bot()
 
 INCOMING_TOKEN = os.getenv("CRM_INCOMING_TOKEN")
 RESPUESTA_PRUEBA = os.getenv(

@@ -27,6 +27,66 @@ import zoneinfo
 from typing import Optional, List, Dict, Any
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Reglas activas del bot — se inyectan desde main.py al arrancar el servidor.
+# Si el dict está vacío el bot funciona normalmente con sus prompts base.
+# No importar desde main.py directamente (circular import).
+# main.py hace:  import bot_productos as _m; _m._REGLAS_ACTIVAS = BOT_REGLAS
+# ─────────────────────────────────────────────────────────────────────────────
+_REGLAS_ACTIVAS: dict = {}
+
+
+def _construir_addon_reglas(paso: str) -> str:
+    """Genera el bloque de instrucciones adicionales que se anexa al system prompt.
+    Retorna cadena vacía si no hay reglas configuradas.
+
+    Args:
+        paso: Clave del paso ('paso1', 'paso2', 'paso2b', 'paso3', 'paso4', 'productos').
+    """
+    if not _REGLAS_ACTIVAS:
+        return ""
+
+    partes: list[str] = []
+
+    # 1. Restricciones globales (aplican a todos los pasos)
+    restricciones = _REGLAS_ACTIVAS.get("restricciones_globales") or []
+    if restricciones:
+        partes.append(
+            "RESTRICCIONES GLOBALES (cumplir siempre):\n"
+            + "\n".join(f"- {r}" for r in restricciones if r)
+        )
+
+    # 2. Instrucción específica de este paso
+    paso_instruccion = ((_REGLAS_ACTIVAS.get("pasos") or {}).get(paso) or "").strip()
+    if paso_instruccion:
+        partes.append(f"INSTRUCCIÓN ESPECÍFICA PARA ESTE PASO:\n{paso_instruccion}")
+
+    # 3. Conocimiento extra de la empresa
+    conocimiento = (_REGLAS_ACTIVAS.get("conocimiento_extra") or "").strip()
+    if conocimiento:
+        partes.append(f"CONOCIMIENTO EXTRA DE LA EMPRESA:\n{conocimiento}")
+
+    # 4. Tono
+    tono = _REGLAS_ACTIVAS.get("tono") or {}
+    tono_parts: list[str] = []
+    if tono.get("nivel"):
+        tono_parts.append(f"tono {tono['nivel']}")
+    if tono.get("tutear") is True:
+        tono_parts.append("tutea al cliente")
+    if tono.get("emojis") is True:
+        tono_parts.append("usa emojis moderadamente")
+    if tono_parts:
+        partes.append("TONO: " + ", ".join(tono_parts) + ".")
+
+    if not partes:
+        return ""
+
+    return (
+        "\n\n--- INSTRUCCIONES ADICIONALES DEL SISTEMA CRM ---\n"
+        + "\n\n".join(partes)
+        + "\n---"
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Catálogo base de productos 4Life (se amplía con PRODUCTOS_EXTRA_JSON en .env)
 # ─────────────────────────────────────────────────────────────────────────────
 _CATALOGO_BASE = """
@@ -1260,7 +1320,7 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
         )
 
     messages = [
-        {"role": "system", "content": _PASO1_SYSTEM},
+        {"role": "system", "content": _PASO1_SYSTEM + _construir_addon_reglas("paso1")},
         {"role": "user", "content": prompt_usuario},
     ]
 
@@ -1372,7 +1432,7 @@ async def _responder_paso2(
 ) -> str | None:
     """PASO 2 — Manejo del nombre + pregunta sobre conocimiento de la compañía."""
     messages = [
-        {"role": "system", "content": _PASO2_SYSTEM},
+        {"role": "system", "content": _PASO2_SYSTEM + _construir_addon_reglas("paso2")},
         {
             "role": "system",
             "content": f"HISTORIAL:\n{historial_texto}",
@@ -1409,7 +1469,7 @@ async def _responder_paso2b(
 ) -> str | None:
     """PASO 2B — Respuesta al conocimiento de la compañía + pregunta sobre padecimiento."""
     messages = [
-        {"role": "system", "content": _PASO2B_SYSTEM},
+        {"role": "system", "content": _PASO2B_SYSTEM + _construir_addon_reglas("paso2b")},
         {
             "role": "system",
             "content": f"HISTORIAL:\n{historial_texto}",
@@ -1452,7 +1512,7 @@ async def _responder_paso3(
 
     system_prompt = _PASO3_SYSTEM.format(preguntas_restantes=preguntas_restantes)
     messages = [
-        {"role": "system", "content": system_prompt + contexto_extra},
+        {"role": "system", "content": system_prompt + contexto_extra + _construir_addon_reglas("paso3")},
         {
             "role": "system",
             "content": f"CATÁLOGO DE PRODUCTOS (para explicar brevemente si el cliente pregunta qué es el producto):\n{_CATALOGO_BASE}",
@@ -1600,7 +1660,7 @@ async def _analizar_entrevista_paso4(historial_texto: str) -> dict:
                     "temperature": 0.1,
                     "max_tokens": 500,
                     "messages": [
-                        {"role": "system", "content": _PASO4_ANALISIS_SYSTEM},
+                        {"role": "system", "content": _PASO4_ANALISIS_SYSTEM + _construir_addon_reglas("paso4")},
                         {"role": "user", "content": user_prompt},
                     ],
                 },
@@ -1923,7 +1983,7 @@ async def responder_productos(
         )
 
         messages = [
-            {"role": "system", "content": _PRODUCTOS_SYSTEM},
+            {"role": "system", "content": _PRODUCTOS_SYSTEM + _construir_addon_reglas("productos")},
             {"role": "user", "content": user_prompt},
         ]
 
