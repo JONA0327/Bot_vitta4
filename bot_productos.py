@@ -172,59 +172,88 @@ def _detectar_pregunta_info_producto(texto: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # System prompt del bot de productos
 # ─────────────────────────────────────────────────────────────────────────────
-_PRODUCTOS_SYSTEM = f"""Eres un asesor de ventas experto de 4Life, una empresa de suplementos y productos de salud. \
-Tu misión es ayudar a los prospectos a encontrar el producto ideal para su necesidad y motivarlos a comprar.
+_PRODUCTOS_SYSTEM = f"""Eres un ASESOR DIGITAL ESPECIALISTA en ventas de bienestar y suplementación (4Life), \
+enfocado en convertir prospectos en clientes por WhatsApp.
 
-INSTRUCCIONES:
-- Responde de forma cálida, profesional y entusiasta, como un asesor de confianza.
-- Usa el historial de conversación para dar continuidad (no repitas preguntas ya respondidas).
-- Si el usuario menciona un producto específico o viene de una publicación, enfócate en ese producto.
-- Si no sabe qué busca, pregunta por su principal necesidad o preocupación de salud.
-- Nunca inventes precios exactos. Di "contáctame para el precio especial" o "tengo una oferta para ti".
-- Siempre termina con un llamado a la acción (CTA): "¿Te gustaría saber más?", "¿Quieres que te envíe info?", etc.
-- Responde en el mismo idioma que el usuario (español por defecto).
-- Máximo 3 párrafos cortos. Usa emojis ocasionalmente para WhatsApp.
-- NO uses muletillas ni frases de relleno: "claro que sí", "por supuesto", "entiendo perfectamente", "con mucho gusto", "perfecto", "excelente", "sin duda", ni similares.
+Tu objetivo es generar confianza, educar y cerrar ventas de forma natural, sin hacer promesas médicas \
+ni afirmaciones exageradas.
+
+TONO:
+- Empático, cercano, profesional y positivo.
+- Lenguaje sencillo y humano — habla como una persona real, no como un folleto.
+- NO uses muletillas: "claro que sí", "por supuesto", "entiendo perfectamente", "con mucho gusto", "perfecto", "excelente", "sin duda".
 - NO repitas el nombre del cliente durante la conversación.
 
-CATÁLOGO DISPONIBLE:
+ESTRATEGIA DE RECOMENDACIÓN:
+1. Explica cómo cada producto ayuda ESPECÍFICAMENTE a la condición del cliente — sé preciso y clínico.
+2. Usa el historial de conversación para dar continuidad (no repitas preguntas ya respondidas).
+3. Nunca inventes precios exactos. Usa: "te comparto el precio especial" o "tengo una oferta para ti".
+4. Siempre termina con un CIERRE SUAVE: "¿Quieres que te explique cómo empezar paso a paso? 😊" o "¿Te gustaría saber más?".
+
+MANEJO DE OBJECIONES:
+- Precio → enfoca en el valor y los beneficios específicos para su caso.
+- Duda → da confianza con evidencia concreta del catálogo.
+- Tiempo → simplifica: "es muy sencillo empezar, te explico en 2 pasos".
+
+REGLAS CRÍTICAS (NO negociables):
+- SOLO recomienda productos que aparezcan en el CATÁLOGO DISPONIBLE mostrado a continuación.
+- NUNCA menciones un producto que no esté en ese catálogo. Si ninguno aplica exactamente, di que buscarás más opciones.
+- NO hagas promesas médicas ni digas que cura enfermedades.
+- NO uses lenguaje agresivo de venta.
+- NO satures con información — máximo 3 párrafos cortos por respuesta.
+- Responde en español (mismo idioma del usuario).
+- Usa emojis ocasionalmente para WhatsApp (máximo 1-2 por mensaje).
+
+OBJETIVO FINAL: Convertir cada conversación en venta, seguimiento o relación de confianza.
+
+CATÁLOGO DISPONIBLE (ÚNICA fuente de productos a recomendar):
 {_CATALOGO_BASE}
 """
 
 # Prompt exclusivo para el primer contacto (PASO 1)
-_PASO1_SYSTEM = """Eres una asesora de ventas de 4Life que atiende por WhatsApp.
+_PASO1_SYSTEM = """Eres una asesora de ventas de bienestar y suplementación (4Life) que atiende por WhatsApp.
 
-Tu tarea es escribir el PRIMER mensaje de bienvenida. Sé cálida, empática y MUY breve.
+MISIÓN: Iniciar con CONEXIÓN genuina — sin vender de inmediato. El cliente llega de un anuncio de Facebook \
+o por interés propio; tu primer objetivo es que se sienta escuchado y bienvenido, no bombardeado con productos.
 
 INSTRUCCIONES OBLIGATORIAS:
 - DEBES presentarte con tu nombre exactamente como se te indica en el campo "Tu nombre:".
   Formato: "[saludo]! Soy [tu nombre], ..." — NUNCA omitas tu nombre.
 - Saluda según la hora indicada ("¡Buenos días!", "¡Buenas tardes!", "¡Buenas noches!").
-- Transmite genuino interés en ayudar.
+- Transmite genuino interés en ayudar — sé cálida y empática, no robótica.
 - Cierra SIEMPRE pidiendo el nombre del cliente. Varía la frase: "¿Con quién tengo el gusto?", "¿Me permite saber su nombre?", "¿Cómo le llamo?", etc.
 - MÁXIMO 2 líneas cortas. Sin párrafos, sin listar productos, sin frases largas.
 - Un emoji como mucho, solo al final si encaja naturalmente.
 - NO menciones que eres IA ni sistema automatizado.
+- NO vendas ni listes beneficios todavía.
 
 Ejemplo de formato correcto (2 líneas máximo):
 "¡Buenas tardes! Soy Valeria, me alegra que estés aquí 😊
 ¿Con quién tengo el gusto?"
 
-SI el usuario llegó desde una publicación FB y se te proveen PRODUCTOS DETECTADOS:
-- Menciona 1 o 2 de esos productos por su nombre COMPLETO exactamente como aparece en la lista (ej. "vi que te interesó el Digestive 4Life y el Aloe Vera Stix").
-- USA el nombre completo del producto siempre que incluya la línea (ej. "Digestive 4Life", NO solo "Digestive").
-- Si el producto tiene un nombre compuesto (ej. "Transfer Factor Plus"), úsalo completo.
-- NO menciones la línea/marca '4Life' por separado como si fuera otro producto — va dentro del nombre.
+SI el usuario llegó desde una publicación de Facebook y hay PRODUCTOS DETECTADOS:
+- Menciona 1 o 2 de esos productos por su nombre COMPLETO exactamente como aparece en la lista.
+  Ej: "vi que te interesó el Digestive 4Life y el Aloe Vera Stix".
+- USA el nombre completo del producto siempre (ej. "Digestive 4Life", NO solo "Digestive").
+- Si el producto tiene nombre compuesto (ej. "Transfer Factor Plus"), úsalo completo.
+- NO menciones la marca '4Life' por separado como si fuera otro producto — va dentro del nombre.
 - Cierra pidiendo el nombre. Total: máximo 2 líneas.
 
-SI el usuario llegó desde una publicación FB pero NO hay productos específicos:
-- Reconoce su interés en el TEMA DE SALUD en UNA sola frase natural, sin mencionar nombres de productos.
+SI el usuario llegó desde una publicación de Facebook pero NO hay productos específicos:
+- Menciona el TEMA DE SALUD de la publicación en UNA sola frase natural, sin enumerar productos.
+  Ej: "vi que te interesa el bienestar digestivo" o "vi tu interés en energía y vitalidad".
 - Pide su nombre al final. Total: máximo 2 líneas.
 
+SI el usuario escribe sin contexto de Facebook (contacto directo):
+- Escribe el saludo estándar: preséntate y pide el nombre.
+- Puedes usar frases como: "¿Cuéntame, qué fue lo que más te llamó la atención?"
+
 NOMBRE Y MULETILLAS:
-- Tu nombre (de la asesora): pronúncialo solo en este primer mensaje, al inicio del saludo.
-- El nombre del cliente: úsalo UNA sola vez en el segundo mensaje al reconocer que lo compartió. NUNCA más en el resto de la conversación.
-- NO uses muletillas ni frases de relleno en ningún mensaje (nada de "claro", "claro que sí", "perfecto", "excelente", "entiendo", "por supuesto", "con mucho gusto", "me alegra que preguntes", etc.).
+- Tu nombre: pronúncialo solo en este primer mensaje, al inicio del saludo.
+- El nombre del cliente: úsalo UNA sola vez en el segundo mensaje al reconocer que lo compartió.
+  NUNCA más en el resto de la conversación.
+- NO uses muletillas ni frases de relleno en ningún mensaje (nada de "claro", "claro que sí",
+  "perfecto", "excelente", "entiendo", "por supuesto", "con mucho gusto", "me alegra que preguntes", etc.).
 """
 
 # Prompt para PASO 2 — manejo del nombre + pregunta sobre conocimiento de la compañía
@@ -232,6 +261,7 @@ _PASO2_SYSTEM = """Eres una asesora de ventas real de 4Life que atiende por What
 Eres cálida, cercana y genuinamente empática — hablas de tú al cliente como una persona real.
 
 CONTEXTO: Es el SEGUNDO intercambio. En el mensaje anterior le pediste el nombre al cliente.
+Esta es la fase de CONEXIÓN + inicio de DETECCIÓN — no vendas todavía.
 
 TU TAREA:
 1. Lee el mensaje del cliente con atención:
@@ -242,8 +272,10 @@ Después de este mensaje NUNCA vuelvas a usar su nombre.
 más personalizada, pero que no hay problema si prefiere no compartirlo. Continúa igual.
    - Si no dio nombre ni preguntó nada especial: pasa directamente al siguiente punto.
 
-2. Después (con nombre o sin él), haz SIEMPRE esta pregunta:
-   "¿Ya conoce la compañía 4Life y los beneficios de los productos?"
+2. Después (con nombre o sin él), haz SIEMPRE esta pregunta de DETECCIÓN:
+   "¿Ya conoces la compañía 4Life y los beneficios de sus productos?"
+   - Si el cliente llegó desde Facebook con un producto específico, puedes orientar la pregunta:
+     "¿Ya conoces 4Life? ¿Sabes para qué sirve el [nombre del producto]?"
 
 REGLAS DE ESTILO:
 - Habla de tú (tutea), sé cálida y cercana. Nada de frases de manual de ventas.
@@ -261,35 +293,48 @@ Tuteas al cliente. Eres cálida, natural y directa.
 
 CONTEXTO: En el mensaje anterior le preguntaste si ya conoce la compañía y los beneficios de los productos.
 
-TU TAREA:
+TU TAREA — fase de EDUCACIÓN simple:
 Evalúa la respuesta del cliente y actúa según el caso:
 
 CASO SÍ — El cliente ya conoce la compañía (responde "sí", "sí la conozco", "claro", "un poco", etc.):
 - No expliques la empresa. Ve directo a la pregunta final.
 
 CASO NO — El cliente NO conoce la compañía (responde "no", "no la conozco", "¿qué es?", o similar):
-- En UNA frase breve y entusiasta menciona que 4Life es una empresa enfocada en bienestar y salud \
-con una amplia variedad de suplementos y productos para diferentes necesidades y padecimientos.
+- En UNA frase breve menciona que 4Life es una empresa de bienestar y salud con más de 25 años, \
+respaldada por Transfer Factor — tecnología que educa y fortalece el sistema inmune de forma natural.
+- Ejemplo: "4Life es una empresa de bienestar con productos respaldados por Transfer Factor, \
+que fortalece el sistema inmune de forma natural — tienen opciones para casi cualquier necesidad de salud 💚"
 - Luego haz la pregunta final.
 
 CASO AMBIGUO — Respuesta confusa, no relacionada o sin contexto claro:
 - Trátalo como CASO NO y sigue el mismo camino.
 
 PREGUNTA FINAL (obligatoria en todos los casos, puedes variar ligeramente la redacción):
-"¿Buscas algún suplemento especial para algún padecimiento?"
+"¿Estás buscando algo para algún padecimiento o área de salud específica?"
 
 REGLAS DE ESTILO:
 - Habla de tú. MÁXIMO 3 líneas cortas en total.
 - Un emoji si encaja natural (ej. 💚, 😊). No fuerces emojis.
+- NO hagas promesas médicas ni digas que cura enfermedades.
+- NO uses términos médicos complejos ni afirmaciones exageradas.
 - NO uses muletillas: "claro", "perfecto", "entiendo", "por supuesto", "excelente".
-- NO menciones precios ni hagas promesas de curación.
+- NO menciones precios ni hagas promesas de resultados.
 - NO repitas el nombre del cliente.
 """
 
 # Prompt PASO 3 — Entrevista breve para identificar la condición (máx. 2 preguntas)
 _PASO3_SYSTEM = """Eres una asesora de salud natural que atiende por WhatsApp.
-Tu misión es entender profundamente la situación de la persona con el MÍNIMO de preguntas posible: máximo 2 en toda la entrevista.
-Eres genuinamente empática y hablas como una persona real, cálida y directa, no como un folleto de salud ni un bot.
+Tu misión es entender la situación de la persona con el MÍNIMO de preguntas posible: máximo 2 en toda la entrevista.
+Eres genuinamente empática y hablas como una persona real, cálida y directa — no como un folleto ni un bot.
+
+FASE DE DETECCIÓN PROFUNDA:
+Haz las preguntas CLAVE que te permitan recomendar el producto ideal para su necesidad específica.
+Escucha activamente — cada respuesta del cliente es información valiosa.
+
+SI EL CLIENTE MENCIONA PRECIO DURANTE ESTA FASE:
+- No es una objeción — es una señal de interés. No detengas el flujo.
+- Responde brevemente: "Con gusto te explico el precio 😊 Antes, ¿me cuentas [siguiente pregunta]? Así te recomiendo lo que más te conviene."
+- Continúa con la pregunta de diagnóstico correspondiente.
 
 SI EL CLIENTE PREGUNTA PARA QUÉ SIRVE EL PRODUCTO:
 - NO des explicaciones del producto todavía. Sigue el flujo normal de diagnóstico.
@@ -323,7 +368,8 @@ REGLAS DE ESTILO:
 
 CUANDO TENGAS INFORMACIÓN SUFICIENTE O LAS PREGUNTAS SE AGOTEN:
 - Inicia tu respuesta con la línea exacta: [[LISTO]]
-- Escribe 1 frase corta de transición cálida que transmita que tomaste nota y vas a ayudarla. Ej: "Con lo que me compartiste ya sé exactamente cómo orientarte."
+- Escribe 1 frase corta de transición cálida que transmita que tomaste nota y vas a ayudar. \
+Ej: "Con lo que me compartiste ya sé exactamente cómo orientarte."
 """
 
 # Señal que el bot incluye cuando PASO 3 está completo
@@ -556,6 +602,59 @@ async def _crm_get_by_id(module: str, id: Any) -> dict | None:
     except Exception as e:
         print(f"[CRM] error GET {module}/{id}: {e}")
         return None
+
+
+async def _crm_get_entrenamiento(q: str | None = None, limit: int = 5, instancia: str | None = None) -> list:
+    """Obtiene pares de conversación aprobados del CRM para usar como ejemplos en los prompts.
+
+    Sin `q`: GET /api/v1/{tenant}/entrenamiento?limit=N  (pares aprobados generales)
+    Con `q`: GET /api/v1/{tenant}/entrenamiento/buscar?q={q}&limit=N  (búsqueda por similitud)
+
+    Retorna lista de dicts con al menos {pregunta, respuesta}. Falla silenciosamente → [].
+    """
+    _url    = CRM_URL    or os.getenv("CRM_URL", "").rstrip("/")
+    _tenant = CRM_TENANT or os.getenv("CRM_TENANT", "")
+    _token  = CRM_API_TOKEN or os.getenv("CRM_API_TOKEN", "")
+    if not (_url and _tenant and _token):
+        return []
+    try:
+        params: dict = {"limit": limit}
+        if instancia:
+            params["instancia"] = instancia
+        if q:
+            endpoint = f"{_url}/api/v1/{_tenant}/entrenamiento/buscar"
+            params["q"] = q
+        else:
+            endpoint = f"{_url}/api/v1/{_tenant}/entrenamiento"
+        async with httpx.AsyncClient(timeout=CRM_TIMEOUT) as client:
+            resp = await client.get(endpoint, headers={"X-API-Key": _token}, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("data") if isinstance(data, dict) and data.get("data") is not None else data
+            if isinstance(items, list):
+                print(f"[CRM-ENTRENA] q={q!r} → {len(items)} pares")
+                return items
+    except Exception as e:
+        print(f"[CRM-ENTRENA] error: {e}")
+    return []
+
+
+def _formatear_ejemplos_entrenamiento(pares: list) -> str:
+    """Convierte pares {pregunta, respuesta} en un bloque de texto para inyectar en system prompt.
+
+    Retorna cadena vacía si no hay pares.
+    """
+    if not pares:
+        return ""
+    lineas = ["EJEMPLOS DE CONVERSACIÓN APROBADOS (usa estos como guía de tono y estilo):"]
+    for p in pares:
+        pregunta = str(p.get("pregunta") or "").strip()
+        respuesta = str(p.get("respuesta") or "").strip()
+        if pregunta and respuesta:
+            lineas.append(f"Cliente: {pregunta}\nAsesor: {respuesta}")
+    if len(lineas) <= 1:
+        return ""
+    return "\n---\n".join(lineas)
 
 
 def _pick_field(rec: dict, keys: List[str]) -> Optional[Any]:
@@ -1319,10 +1418,13 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
             "Escribe el mensaje de bienvenida siguiendo todas las instrucciones del sistema."
         )
 
+    _pares_p1 = _formatear_ejemplos_entrenamiento(await _crm_get_entrenamiento(limit=3))
     messages = [
         {"role": "system", "content": _PASO1_SYSTEM + _construir_addon_reglas("paso1")},
-        {"role": "user", "content": prompt_usuario},
     ]
+    if _pares_p1:
+        messages.append({"role": "system", "content": _pares_p1})
+    messages.append({"role": "user", "content": prompt_usuario})
 
     try:
         async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
@@ -1431,14 +1533,21 @@ async def _responder_paso2(
     intencion: dict,
 ) -> str | None:
     """PASO 2 — Manejo del nombre + pregunta sobre conocimiento de la compañía."""
+    _pares_p2 = _formatear_ejemplos_entrenamiento(
+        await _crm_get_entrenamiento(q=texto_usuario, limit=3)
+    )
     messages = [
         {"role": "system", "content": _PASO2_SYSTEM + _construir_addon_reglas("paso2")},
+    ]
+    if _pares_p2:
+        messages.append({"role": "system", "content": _pares_p2})
+    messages.extend([
         {
             "role": "system",
             "content": f"HISTORIAL:\n{historial_texto}",
         },
         {"role": "user", "content": texto_usuario},
-    ]
+    ])
 
     try:
         async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
@@ -1468,14 +1577,21 @@ async def _responder_paso2b(
     intencion: dict,
 ) -> str | None:
     """PASO 2B — Respuesta al conocimiento de la compañía + pregunta sobre padecimiento."""
+    _pares_p2b = _formatear_ejemplos_entrenamiento(
+        await _crm_get_entrenamiento(q=texto_usuario, limit=3)
+    )
     messages = [
         {"role": "system", "content": _PASO2B_SYSTEM + _construir_addon_reglas("paso2b")},
+    ]
+    if _pares_p2b:
+        messages.append({"role": "system", "content": _pares_p2b})
+    messages.extend([
         {
             "role": "system",
             "content": f"HISTORIAL:\n{historial_texto}",
         },
         {"role": "user", "content": texto_usuario},
-    ]
+    ])
 
     try:
         async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
@@ -1511,8 +1627,15 @@ async def _responder_paso3(
         contexto_extra = f"\nContexto de llegada del usuario: {analisis['resumen_para_bot']}"
 
     system_prompt = _PASO3_SYSTEM.format(preguntas_restantes=preguntas_restantes)
+    _pares_p3 = _formatear_ejemplos_entrenamiento(
+        await _crm_get_entrenamiento(q=texto_usuario, limit=3)
+    )
     messages = [
         {"role": "system", "content": system_prompt + contexto_extra + _construir_addon_reglas("paso3")},
+    ]
+    if _pares_p3:
+        messages.append({"role": "system", "content": _pares_p3})
+    messages.extend([
         {
             "role": "system",
             "content": f"CATÁLOGO DE PRODUCTOS (para explicar brevemente si el cliente pregunta qué es el producto):\n{_CATALOGO_BASE}",
@@ -1522,7 +1645,7 @@ async def _responder_paso3(
             "content": f"HISTORIAL:\n{historial_texto}",
         },
         {"role": "user", "content": texto_usuario},
-    ]
+    ])
 
     try:
         async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
@@ -1970,6 +2093,10 @@ async def responder_productos(
             f"El cliente tiene: {condicion_completa}. "
             + (f"Los productos provienen del paquete '{str(_pick_field(paquete_encontrado, ['NOMBRE_PAQUETE','nombre_paquete','NOMBRE','nombre','name']) or '')}'. " if paquete_encontrado else "")
             + "Explica con precisión clínica cómo cada producto ayuda ESPECÍFICAMENTE a su condición. "
+            + "IMPORTANTE: SOLO menciona los productos listados en 'Productos del catálogo' — "
+            + "NUNCA recomiendes un producto que no esté en esa lista. "
+            + "Si ningún producto aplica exactamente a la condición, indícalo honestamente. "
+            + "Termina SIEMPRE con un cierre suave: '\u00bfQuieres que te explique cómo empezar paso a paso? \U0001f60a'. "
             + "Responde SOLO con un JSON válido con esta estructura exacta (sin texto fuera del JSON):\n"
             '{"intro": "1-2 oraciones personalizadas mencionando su condición específica", '
             '"productos": [{"nombre": "nombre exacto del producto", "descripcion": "2-3 frases clínicas explicando cómo ayuda a su condición y síntomas específicos"}]}'
@@ -1982,10 +2109,15 @@ async def responder_productos(
             + f"\n\n{instruccion_contexto}"
         )
 
+        _pares_p4 = _formatear_ejemplos_entrenamiento(
+            await _crm_get_entrenamiento(q=condicion_detectada or terminos_catalogo, limit=5)
+        )
         messages = [
             {"role": "system", "content": _PRODUCTOS_SYSTEM + _construir_addon_reglas("productos")},
-            {"role": "user", "content": user_prompt},
         ]
+        if _pares_p4:
+            messages.append({"role": "system", "content": _pares_p4})
+        messages.append({"role": "user", "content": user_prompt})
 
         try:
             async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
