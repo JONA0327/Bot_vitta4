@@ -1680,6 +1680,7 @@ async def _responder_urgencia(
     historial_texto: str,
     analisis: dict,
     intencion: dict,
+    instancia: str = "",
 ) -> str | None:
     """Responde a un usuario que llega en estado de urgencia o desesperación.
 
@@ -1688,11 +1689,16 @@ async def _responder_urgencia(
     if not OPENAI_API_KEY:
         return None
 
+    nombre_bot = instancia.strip() or "tu asesora de 4Life"
+    _system_urgencia = _PASO_URGENCIA_SYSTEM.replace(
+        "soy tu asesora de 4Life", f"soy {nombre_bot}"
+    )
+
     _pares = _formatear_ejemplos_entrenamiento(
         await _crm_get_entrenamiento(q="urgencia grave quimioterapia desesperado critico", limit=3)
     )
     messages = [
-        {"role": "system", "content": _PASO_URGENCIA_SYSTEM + _construir_addon_reglas("paso3")},
+        {"role": "system", "content": _system_urgencia + _construir_addon_reglas("paso3")},
     ]
     if _pares:
         messages.append({"role": "system", "content": _pares})
@@ -2005,7 +2011,7 @@ async def responder_productos(
         # Si el primer mensaje ya indica urgencia, no pedir el nombre — ir directo a empatía
         if _es_urgente(texto_usuario):
             print(f"[Urgencia] detectada en PASO1 → flujo urgencia desde primer contacto")
-            return await _responder_urgencia(texto_usuario, historial_texto, analisis, intencion)
+            return await _responder_urgencia(texto_usuario, historial_texto, analisis, intencion, instancia)
         return await _responder_paso1(instancia, analisis, intencion)
 
     _turnos = _contar_turnos_bot(historial_texto)
@@ -2019,7 +2025,7 @@ async def responder_productos(
         if _turnos == 1:
             # Primera respuesta tras PASO1: empatía profunda + pregunta clínica directa
             print(f"[Urgencia] detectada en turno 1 → flujo urgencia activado")
-            return await _responder_urgencia(texto_usuario, historial_texto, analisis, intencion)
+            return await _responder_urgencia(texto_usuario, historial_texto, analisis, intencion, instancia)
         # turnos >= 2: ya se respondió con empatía, permitir máximo 1 pregunta clínica más
         _preguntas_hechas_urg = _turnos - 2
         if _preguntas_hechas_urg < 1:
