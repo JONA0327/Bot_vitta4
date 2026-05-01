@@ -375,6 +375,50 @@ Ej: "Con lo que me compartiste ya sé exactamente cómo orientarte."
 # Señal que el bot incluye cuando PASO 3 está completo
 PASO3_SIGNAL = "[[LISTO]]"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Detección de urgencia — palabras que indican desesperación o situación crítica
+# ─────────────────────────────────────────────────────────────────────────────
+_URGENCIA_RE = re.compile(
+    r"\b(desesperado|desesperada|urgente|urgencia|urgentemente|"
+    r"quimioterapia|quimio|cáncer|cancer|leucemia|tumor|metastasis|metástasis|"
+    r"muy mal|ya no aguanto|no puedo más|no puedo mas|emergencia|"
+    r"se está muriendo|se esta muriendo|está grave|esta grave|"
+    r"no sé qué hacer|no se que hacer|angustiado|angustiada|"
+    r"desesperación|desesperacion|en agonía|en agonia|crítico|critico)\b",
+    re.IGNORECASE,
+)
+
+
+def _es_urgente(texto: str) -> bool:
+    return bool(_URGENCIA_RE.search(texto))
+
+
+def _historial_tiene_urgencia(historial_texto: str) -> bool:
+    msgs = re.findall(r"(?:^|\n)Usuario:\s*(.*?)(?=\nBot:|\Z)", historial_texto, re.DOTALL)
+    return any(_es_urgente(m) for m in msgs)
+
+
+# Prompt para el flujo de urgencia — responde con empatía profunda, salta el flujo comercial
+_PASO_URGENCIA_SYSTEM = """Eres una asesora de salud natural con profunda empatía, atendiendo por WhatsApp.
+La persona frente a ti está en un estado de urgencia o desesperación — enfermedad grave, quimioterapia
+de un ser querido, situación crítica de salud propia.
+
+MISIÓN: Que esta persona sienta que hay alguien real del otro lado que entiende y puede ayudar.
+NO sigas el flujo normal de ventas.
+
+INSTRUCCIONES:
+1. Nombra específicamente lo que compartió — demuestra que lo escuchaste de verdad.
+   MAL: "Entiendo lo difícil que es tu situación."
+   BIEN: "Tener a un hijo atravesando quimioterapia es una de las situaciones más agotadoras para una familia."
+2. Transmite con convicción que tienes opciones concretas que pueden ayudar.
+3. Haz UNA sola pregunta directa para entender exactamente qué necesitan ahora mismo:
+   ¿Es para el paciente directamente? ¿Para el cuidador? ¿Cuál es el síntoma o necesidad más urgente?
+4. NUNCA preguntes si conoce la compañía ni hagas presentaciones de empresa.
+5. Suena humano, presente y seguro — como una persona que realmente puede ayudar.
+
+TONO: Cálido, cercano, sin dramatismo vacío. Sin emojis alegres. Sin muletillas. Sin lenguaje de ventas.
+FORMATO: Máximo 3 líneas.
+"""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper: saludo PASO 1 — primer contacto
@@ -1673,6 +1717,52 @@ def _contar_turnos_bot(historial_texto: str) -> int:
     return historial_texto.count("\nBot:") + (1 if historial_texto.startswith("Bot:") else 0)
 
 
+async def _responder_urgencia(
+    texto_usuario: str,
+    historial_texto: str,
+    analisis: dict,
+    intencion: dict,
+) -> str | None:
+    """Responde a un usuario que llega en estado de urgencia o desesperación.
+
+    Salta PASO2/2B y responde con empatía profunda + una pregunta clínica directa.
+    """
+    if not OPENAI_API_KEY:
+        return None
+
+    _pares = _formatear_ejemplos_entrenamiento(
+        await _crm_get_entrenamiento(q="urgencia grave quimioterapia desesperado critico", limit=3)
+    )
+    messages = [
+        {"role": "system", "content": _PASO_URGENCIA_SYSTEM + _construir_addon_reglas("paso3")},
+    ]
+    if _pares:
+        messages.append({"role": "system", "content": _pares})
+    if historial_texto.strip():
+        messages.append({"role": "system", "content": f"HISTORIAL:\n{historial_texto}"})
+    messages.append({"role": "user", "content": texto_usuario})
+
+    try:
+        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0.8,
+                    "max_tokens": 200,
+                    "messages": messages,
+                },
+            )
+            resp.raise_for_status()
+            texto = resp.json()["choices"][0]["message"]["content"].strip()
+            print(f"[Urgencia] respuesta generada para: {texto_usuario[:60]!r}")
+            return texto
+    except Exception as e:
+        print(f"[Urgencia] error: {e}")
+        return None
+
+
 async def _clasificar_post_video(texto_usuario: str) -> str:
     """Clasifica la intención del usuario después de recibir los videos recomendados.
 
@@ -1956,25 +2046,47 @@ async def responder_productos(
     if not historial_texto.strip() or _contar_turnos_bot(historial_texto) == 0:
         return await _responder_paso1(instancia, analisis, intencion)
 
+    _turnos = _contar_turnos_bot(historial_texto)
+    _MARKER_PASO3_DONE = "Estoy examinando tu situación"
+    _en_urgencia = _es_urgente(texto_usuario) or _historial_tiene_urgencia(historial_texto)
+
+    # ── FLUJO DE URGENCIA: persona desesperada, situación crítica de salud ──────
+    # Si se detecta urgencia (desesperación, quimioterapia, enfermedad grave, etc.)
+    # se omiten PASO2 y PASO2B — responder con empatía + entrevista clínica directa.
+    if _en_urgencia:
+        if _turnos == 1:
+            # Primera respuesta tras PASO1: empatía profunda + pregunta clínica directa
+            print(f"[Urgencia] detectada en turno 1 → flujo urgencia activado")
+            return await _responder_urgencia(texto_usuario, historial_texto, analisis, intencion)
+        # turnos >= 2: ya se respondió con empatía, permitir máximo 1 pregunta clínica más
+        _preguntas_hechas_urg = _turnos - 2
+        if _preguntas_hechas_urg < 1:
+            print(f"[Urgencia] turno {_turnos} → PASO3 urgencia preguntas_restantes=1")
+            return await _responder_paso3(
+                texto_usuario, historial_texto, analisis, intencion,
+                preguntas_restantes=1,
+            )
+        # ≥1 pregunta clínica realizada → caer a PASO4 directamente
+
     # ── PASO 2: Segunda respuesta — manejo del nombre + pregunta sobre la compañía ──
-    if _contar_turnos_bot(historial_texto) == 1:
+    if not _en_urgencia and _turnos == 1:
         return await _responder_paso2(texto_usuario, historial_texto, analisis, intencion)
 
     # ── PASO 2B: Respuesta al conocimiento de la compañía + pregunta de padecimiento ──
-    if _contar_turnos_bot(historial_texto) == 2:
+    if not _en_urgencia and _turnos == 2:
         return await _responder_paso2b(texto_usuario, historial_texto, analisis, intencion)
 
     # ── PASO 3: Diagnóstico profundo (hasta que el bot tenga suficiente info) ─
     # Se detecta el fin de PASO 3 por la presencia del marcador en historial
     # o cuando se alcanza el límite duro de 2 preguntas
-    _MARKER_PASO3_DONE = "Estoy examinando tu situación"
-    preguntas_paso3 = max(0, _contar_turnos_bot(historial_texto) - 3)
-    preguntas_restantes = max(0, 2 - preguntas_paso3)
-    if _MARKER_PASO3_DONE not in historial_texto and preguntas_paso3 < 2:
-        return await _responder_paso3(
-            texto_usuario, historial_texto, analisis, intencion,
-            preguntas_restantes=preguntas_restantes,
-        )
+    if not _en_urgencia:
+        preguntas_paso3 = max(0, _turnos - 3)
+        preguntas_restantes = max(0, 2 - preguntas_paso3)
+        if _MARKER_PASO3_DONE not in historial_texto and preguntas_paso3 < 2:
+            return await _responder_paso3(
+                texto_usuario, historial_texto, analisis, intencion,
+                preguntas_restantes=preguntas_restantes,
+            )
 
     # ── POST-PASO4: Si ya se enviaron productos, pausar ante CUALQUIER mensaje ──
     # Señales que indican que PASO4 ya corrió y envió la información:
