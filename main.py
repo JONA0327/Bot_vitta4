@@ -604,8 +604,27 @@ async def _procesar_y_enviar(data: dict) -> None:
                                 "etiqueta":       _etiqueta,
                             },
                         )
+                        
+                        owner_phone = os.getenv("BOT_OWNER_PHONE")
+                        if owner_phone:
+                            mensaje_alerta = (
+                                f"🚨 *ALERTA DE BOT PAUSADO* 🚨\n\n"
+                                f"Instancia: {instancia}\n"
+                                f"Cliente: wa.me/{telefono}\n"
+                                f"Motivo: {motivo}\n\n"
+                                f"La conversación fue pausada. ¡Requiere atención humana!"
+                            )
+                            await client.post(
+                                f"{CRM_URL}/api/v1/{CRM_TENANT}/bot-send",
+                                headers={"X-API-Key": CRM_API_TOKEN, "Content-Type": "application/json"},
+                                json={
+                                    "telefono": owner_phone,
+                                    "instancia": instancia,
+                                    "respuesta": mensaje_alerta,
+                                },
+                            )
                 except Exception as exc:
-                    await bot_log(instancia, "error", "BotSend", f"Error pausando: {exc}")
+                    await bot_log(instancia, "error", "BotSend", f"Error pausando o notificando al dueño: {exc}")
             await _pausar_conv()
             return
         respuesta = resultado.get("texto")
