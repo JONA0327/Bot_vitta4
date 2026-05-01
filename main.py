@@ -16,10 +16,8 @@ load_dotenv()
 from fastapi import FastAPI, HTTPException, Request
 
 from BotLogger import CRM_API_TOKEN, CRM_TENANT, CRM_URL, bot_log
-# import bot_productos as _bot_productos_module
-# from bot_productos import responder_productos
-import Bot_Productos_v2 as _bot_productos_module
-from Bot_Productos_v2 import responder_productos
+import bot_productos as _bot_productos_module
+from bot_productos import responder_productos
 from Filtro_Mensajes import (
     _descargar_imagen_base64,
     analizar_conversacion_entrenamiento,
