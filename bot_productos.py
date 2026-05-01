@@ -197,14 +197,18 @@ Después de este mensaje NUNCA vuelvas a usar su nombre.
 más personalizada, pero que no hay problema si prefiere no compartirlo. Continúa igual.
    - Si no dio nombre ni preguntó nada especial: pasa directamente al siguiente punto.
 
-2. Después (con nombre o sin él), haz SIEMPRE esta pregunta de DETECCIÓN:
+2. Si en el contexto hay INFO_PRODUCTO_CRM, responde esa pregunta brevemente con la información
+   provista (1-2 frases concisas, naturales, sin listar beneficios en exceso).
+   Luego haz la pregunta de DETECCIÓN del punto 3.
+
+3. Después (con nombre o sin él, y con o sin info de producto), haz SIEMPRE esta pregunta:
    "¿Ya conoces la compañía 4Life y los beneficios de sus productos?"
    - Si el cliente llegó desde Facebook con un producto específico, puedes orientar la pregunta:
      "¿Ya conoces 4Life? ¿Sabes para qué sirve el [nombre del producto]?"
 
 REGLAS DE ESTILO:
 - Habla de tú, sé cálida y directa. Nada de frases de manual de ventas.
-- MÁXIMO 2 líneas cortas en total.
+- MÁXIMO 3 líneas cortas en total (si hay info de producto se permiten 3).
 - Un emoji si encaja natural (ej. 😊, 💚). No fuerces.
 - NO saludes de nuevo.
 - PALABRAS PROHIBIDAS (ni una vez): entiendo, claro, perfecto, excelente, por supuesto, con mucho gusto, sin duda, claro que sí, interesante, genial, qué bueno, me alegra, fantástico, entendido, de acuerdo.
@@ -1545,18 +1549,58 @@ def _construir_pregunta_indagacion(analisis: dict, intencion: dict, historial_te
         )
 
 
+async def _buscar_info_producto_crm(nombre_producto: str) -> str:
+    """Busca un producto en el CRM por nombre y retorna su descripción, o cadena vacía."""
+    if not nombre_producto:
+        return ""
+    try:
+        todos = await _obtener_todos_productos()
+        nombre_norm = _expandir_nombre_producto(nombre_producto).lower().strip()
+        for prod in todos:
+            nombre_prod = str(
+                _pick_field(prod, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
+            ).lower().strip()
+            if nombre_norm and nombre_prod and (
+                nombre_norm in nombre_prod or nombre_prod in nombre_norm
+            ):
+                desc = str(_pick_field(prod, ["DESCRIPCION", "descripcion", "description"]) or "").strip()
+                nombre_oficial = str(
+                    _pick_field(prod, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or nombre_producto
+                ).strip()
+                return f"{nombre_oficial}: {desc}" if desc else nombre_oficial
+    except Exception as e:
+        print(f"[CRM-INFO-PROD] error buscando '{nombre_producto}': {e}")
+    return ""
+
+
 async def _responder_paso2(
     texto_usuario: str,
     historial_texto: str,
     analisis: dict,
     intencion: dict,
 ) -> str | None:
-    """PASO 2 — Manejo del nombre + pregunta sobre conocimiento de la compañía."""
+    """PASO 2 — Manejo del nombre + pregunta sobre conocimiento de la compañía.
+    Si en el primer mensaje del usuario se detectó una pregunta de info de producto,
+    busca en el CRM e inyecta la info para que el bot la responda en este turno.
+    """
+    # ── Detectar si el primer mensaje del usuario preguntó por info de un producto ──
+    _info_producto_ctx = ""
+    msgs_usuario = re.findall(r"(?:^|\n)Usuario:\s*(.*?)(?=\nBot:|\Z)", historial_texto, re.DOTALL)
+    primer_mensaje = msgs_usuario[0].strip() if msgs_usuario else ""
+    _nombre_prod_preguntado = _detectar_pregunta_info_producto(primer_mensaje) or _detectar_pregunta_info_producto(texto_usuario)
+    if _nombre_prod_preguntado:
+        _info_crm = await _buscar_info_producto_crm(_nombre_prod_preguntado)
+        if _info_crm:
+            _info_producto_ctx = f"\nINFO_PRODUCTO_CRM: {_info_crm}"
+            print(f"[PASO2] info producto CRM encontrada para '{_nombre_prod_preguntado}'")
+        else:
+            print(f"[PASO2] producto '{_nombre_prod_preguntado}' no encontrado en CRM")
+
     _pares_p2 = _formatear_ejemplos_entrenamiento(
         await _crm_get_entrenamiento(q=texto_usuario, limit=3)
     )
     messages = [
-        {"role": "system", "content": _PASO2_SYSTEM + _construir_addon_reglas("paso2")},
+        {"role": "system", "content": _PASO2_SYSTEM + _info_producto_ctx + _construir_addon_reglas("paso2")},
     ]
     if _pares_p2:
         messages.append({"role": "system", "content": _pares_p2})
