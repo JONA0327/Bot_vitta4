@@ -453,8 +453,7 @@ async def _procesar_y_enviar(data: dict) -> None:
     tipo_intencion = (intencion.get("intencion") or "").lower()
     es_flujo_negocio_puro = tipo_intencion == "negocio" and not historial_texto.strip()
     flujo = "negocio/genérico" if es_flujo_negocio_puro else "productos"
-    # from bot_productos import _contar_turnos_bot, PASO3_SIGNAL
-    from Bot_Productos_v2 import _contar_turnos_bot, PASO3_SIGNAL
+    from bot_productos import _contar_turnos_bot, PASO3_SIGNAL
     _turnos_bot = _contar_turnos_bot(historial_texto)
     _MARKER_PASO3 = "Estoy examinando tu situación"
     if not historial_texto.strip() or _turnos_bot == 0:
