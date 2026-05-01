@@ -95,6 +95,11 @@ _MOTIVOS_CIERRE  = {
 _pending_tasks: dict[str, asyncio.Task] = {}
 _pending_data: dict[str, dict] = {}
 
+# ── Cache de productos detectados en imagen (sin marker visible al usuario) ──
+# Clave "instancia:telefono" → lista de nombres de productos detectados en la
+# imagen del primer mensaje. Se consume en PASO 2 para saltar al info directa.
+_img_prod_cache: dict[str, list] = {}
+
 # ── Conversaciones tomadas por el dueño del número (humano activo) ────────────
 # Clave "instancia:telefono" → timestamp del último mensaje fromMe=true.
 # Mientras esté en este dict, el bot recibe mensajes pero NO responde.
@@ -558,6 +563,14 @@ async def _procesar_y_enviar(data: dict) -> None:
     tipo_intencion = (intencion.get("intencion") or "").lower()
     es_flujo_negocio_puro = tipo_intencion == "negocio" and not historial_texto.strip()
 
+    # ── Inyectar productos en imagen desde cache (PASO 2 en adelante) ────────
+    _clave_img = f"{instancia}:{telefono}"
+    _cached_img_prods = _img_prod_cache.pop(_clave_img, None)
+    if _cached_img_prods:
+        procesado.setdefault("analisis", {})["cached_image_products"] = _cached_img_prods
+        await bot_log(instancia, "info", "InfoImg",
+            f"productos de imagen inyectados al analisis: {_cached_img_prods}")
+
     resultado = None
     if not es_flujo_negocio_puro:
         resultado = await responder_productos(
@@ -572,6 +585,11 @@ async def _procesar_y_enviar(data: dict) -> None:
     medios = None
     mensagens_multi: list | None = None
     if isinstance(resultado, dict):
+        # Guardar productos de imagen en cache para PASO 2 (sin marker visible al usuario)
+        if resultado.get("_info_img_cache"):
+            _img_prod_cache[_clave_img] = resultado["_info_img_cache"]
+            await bot_log(instancia, "info", "InfoImg",
+                f"productos en imagen cacheados para PASO2: {resultado['_info_img_cache']}")
         # Si el bot indica que no hay productos en catálogo → pausar sin responder
         if resultado.get("pausar"):
             motivo = resultado.get("motivo", "sin_productos_catalogo")
