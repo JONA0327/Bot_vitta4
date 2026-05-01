@@ -91,6 +91,7 @@ def _construir_addon_reglas(paso: str) -> str:
 def _detectar_pregunta_info_producto(texto: str) -> str:
     """Si el usuario pregunta por información/descripción de un producto específico,
     retorna el nombre del producto mencionado. Si no, retorna cadena vacía."""
+    # Patrón 1: frases formales — qué es X, info sobre X, cuéntame del X, etc.
     patron = re.search(
         r"(?:qu[eé]\s+es|para\s+qu[eé]\s+(?:es|sirve)|en\s+qu[eé]\s+ayuda|"
         r"de\s+qu[eé]\s+(?:trata|se\s+trata)|info(?:rmaci[oó]n)?\s+(?:del?|sobre)|"
@@ -101,6 +102,23 @@ def _detectar_pregunta_info_producto(texto: str) -> str:
     )
     if patron:
         return patron.group(1).strip()
+    # Patrón 2: forma corta — "info [producto]" o "información [producto]" al inicio
+    patron2 = re.search(
+        r"^\s*info(?:rmaci[oó]n)?\s+(?:del?\s+|la\s+|el\s+|los\s+|las\s+)?"
+        r"([A-Za-z0-9][A-Za-z0-9\-\s]{1,38}?)\s*[?.,!]?\s*$",
+        texto.strip(),
+        re.IGNORECASE,
+    )
+    if patron2:
+        return patron2.group(1).strip()
+    # Patrón 3: "[producto] info" o "[producto] información" al final
+    patron3 = re.search(
+        r"^\s*([A-Za-z0-9][A-Za-z0-9\-\s]{1,38}?)\s+info(?:rmaci[oó]n)?\s*[?.,!]?\s*$",
+        texto.strip(),
+        re.IGNORECASE,
+    )
+    if patron3:
+        return patron3.group(1).strip()
     return ""
 
 
@@ -197,23 +215,28 @@ Después de este mensaje NUNCA vuelvas a usar su nombre.
 más personalizada, pero que no hay problema si prefiere no compartirlo. Continúa igual.
    - Si no dio nombre ni preguntó nada especial: pasa directamente al siguiente punto.
 
-2. Si en el contexto hay INFO_PRODUCTO_CRM, responde esa pregunta brevemente con la información
-   provista (1-2 frases concisas, naturales, sin listar beneficios en exceso).
-   Luego haz la pregunta de DETECCIÓN del punto 3.
+2. HAY DOS CAMINOS — elige según si hay INFO_PRODUCTO_CRM en el contexto:
 
-3. Después (con nombre o sin él, y con o sin info de producto), haz SIEMPRE esta pregunta:
-   "¿Ya conoces la compañía 4Life y los beneficios de sus productos?"
-   - Si el cliente llegó desde Facebook con un producto específico, puedes orientar la pregunta:
+   CAMINO A — HAY INFO_PRODUCTO_CRM (el cliente preguntó por un producto específico):
+   - Reconoce el nombre si lo dio (1 frase breve y cálida).
+   - Comparte la info del producto en 1-2 frases directas y naturales.
+   - Cierra preguntando si desea ver el video del producto: "¿Quieres que te comparta el video?"
+   - NO preguntes si conoce la compañía. NO hagas preguntas de diagnóstico.
+
+   CAMINO B — NO hay INFO_PRODUCTO_CRM (contacto general):
+   - Reconoce el nombre si lo dio (1 frase breve y cálida).
+   - Haz la pregunta de DETECCIÓN: "¿Ya conoces la compañía 4Life y los beneficios de sus productos?"
+   - Si el cliente llegó desde Facebook con un producto específico, orienta la pregunta:
      "¿Ya conoces 4Life? ¿Sabes para qué sirve el [nombre del producto]?"
 
 REGLAS DE ESTILO:
 - Habla de tú, sé cálida y directa. Nada de frases de manual de ventas.
-- MÁXIMO 3 líneas cortas en total (si hay info de producto se permiten 3).
+- MÁXIMO 3 líneas cortas en total.
 - Un emoji si encaja natural (ej. 😊, 💚). No fuerces.
 - NO saludes de nuevo.
 - PALABRAS PROHIBIDAS (ni una vez): entiendo, claro, perfecto, excelente, por supuesto, con mucho gusto, sin duda, claro que sí, interesante, genial, qué bueno, me alegra, fantástico, entendido, de acuerdo.
 - NO menciones que eres IA, bot o sistema automatizado.
-- NO preguntes sobre su necesidad todavía.
+- NO preguntes sobre su necesidad todavía si estás en CAMINO A.
 """
 
 # Prompt para PASO 2B — respuesta al conocimiento de la compañía → lleva a la pregunta de padecimiento
@@ -1594,9 +1617,11 @@ async def _responder_info_directa(
     todos = await _obtener_todos_productos()
     disp  = [p for p in todos if _is_disponible(p)]
     encontrados: list[dict] = []
+    # Buscar en todos los productos (incluye no disponibles para la detección por nombre)
+    todos_para_busqueda = todos
     for nombre_pedido in productos_objetivo:
         nombre_norm = _expandir_nombre_producto(nombre_pedido).lower().strip()
-        for prod in disp:
+        for prod in todos_para_busqueda:
             nombre_prod = str(
                 _pick_field(prod, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
             ).lower().strip()
@@ -2236,11 +2261,16 @@ async def responder_productos(
         # ── ATAJO DIRECTO: producto específico en pauta o preguntado por el usuario ──
         # Si hay un producto concreto en el contexto, saltar PASO2/2B/PASO3 y dar
         # info del producto directamente (el usuario ya sabe lo que quiere).
-        _productos_directos = _extraer_productos_contexto(analisis, intencion)
+        _productos_directos: list[str] = _extraer_productos_contexto(analisis, intencion)
+        if not _productos_directos:
+            # También revisar productos_mencionados de intencion directamente
+            _prods_intencion = [p for p in (intencion.get("productos_mencionados") or []) if p]
+            if _prods_intencion:
+                _productos_directos = _prods_intencion
         if not _productos_directos:
             # Revisar si el primer mensaje del usuario preguntó por un producto específico
             _msgs_u = re.findall(r"(?:^|\n)Usuario:\s*(.*?)(?=\nBot:|\Z)", historial_texto, re.DOTALL)
-            _primer_msg_u = _msgs_u[0].strip() if _msgs_u else ""
+            _primer_msg_u = (_msgs_u[0].strip() if _msgs_u else "") or texto_usuario
             _prod_preguntado = _detectar_pregunta_info_producto(_primer_msg_u)
             if _prod_preguntado:
                 _productos_directos = [_prod_preguntado]
@@ -2251,8 +2281,8 @@ async def responder_productos(
             )
             if _resultado_directo is not None:
                 return _resultado_directo
-            # Si no encontró el producto en CRM, caer al flujo normal
-            print(f"[Atajo] producto no en CRM → flujo normal")
+            # Producto no encontrado en CRM → ir a PASO2 pero con flag de que se pidió info
+            print(f"[Atajo] producto no en CRM → PASO2 con contexto de producto")
         return await _responder_paso2(texto_usuario, historial_texto, analisis, intencion)
 
     # ── PASO 2B: Respuesta al conocimiento de la compañía + pregunta de padecimiento ──
