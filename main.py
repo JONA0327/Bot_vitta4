@@ -1,6 +1,7 @@
 
 import asyncio
 import os
+import time
 from typing import Any
 import re
 from difflib import SequenceMatcher
@@ -93,6 +94,13 @@ _MOTIVOS_CIERRE  = {
 # ── Estado de debounce (clave = "instancia:telefono") ────────────────────────
 _pending_tasks: dict[str, asyncio.Task] = {}
 _pending_data: dict[str, dict] = {}
+
+# ── Conversaciones tomadas por el dueño del número (humano activo) ────────────
+# Clave "instancia:telefono" → timestamp del último mensaje fromMe=true.
+# Mientras esté en este dict, el bot recibe mensajes pero NO responde.
+# Se expira automáticamente después de 2 horas sin actividad del dueño.
+_human_activo: dict[str, float] = {}
+_HUMAN_TTL_SECS: int = 7200  # 2 horas
 
 
 # ── Helpers: consultar pautas activas en el CRM y comparar con publicación FB
@@ -275,6 +283,67 @@ def _score_pauta_match(pauta: dict, fb: dict) -> float:
     return float(score)
 
 
+# ── Helpers: agente humano activo ────────────────────────────────────────────
+
+async def _pausar_por_agente(telefono: str, remote_jid: str, instancia: str) -> None:
+    """Pausa el bot para la conversación tomada por un agente humano."""
+    if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN):
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"{CRM_URL}/api/v1/{CRM_TENANT}/blocked_numbers",
+                headers={"X-API-Key": CRM_API_TOKEN, "Content-Type": "application/json"},
+                json={
+                    "Numero_Baneado": telefono,
+                    "Numero_Remote":  remote_jid or telefono,
+                    "Motivo_Bloqueo": "agente_humano",
+                    "tipo_bloqueo":   "irrelevante",
+                    "instancia":      instancia,
+                    "etiqueta":       _ETIQUETA_PAUSA,
+                },
+            )
+        await bot_log(instancia, "info", "AgenteActivo", f"Bot pausado por agente tel={telefono}")
+    except Exception as exc:
+        await bot_log(instancia, "error", "AgenteActivo", f"Error pausando por agente: {exc}")
+
+
+async def _guardar_turno_agente(
+    telefono: str,
+    remote_jid: str,
+    instancia: str,
+    mensaje: str,
+    agente_nombre: str = "Agente",
+) -> None:
+    """Guarda el mensaje de un agente en el historial del CRM sin reenviarlo al cliente.
+
+    Usa bot-send con solo_historial=true para almacenar el turno en la conversación
+    y mantener el historial completo cuando el bot sea reactivado.
+    """
+    if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN) or not mensaje:
+        return
+    texto_historial = f"[{agente_nombre}]: {mensaje}"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{CRM_URL}/api/v1/{CRM_TENANT}/bot-send",
+                headers={"X-API-Key": CRM_API_TOKEN, "Content-Type": "application/json"},
+                json={
+                    "telefono":       telefono,
+                    "remote_jid":     remote_jid or telefono,
+                    "instancia":      instancia,
+                    "respuesta":      texto_historial,
+                    "user_message":   "",
+                    "solo_historial": True,
+                },
+            )
+        nivel = "info" if resp.status_code in (200, 201) else "warning"
+        await bot_log(instancia, nivel, "AgenteActivo",
+                      f"Turno agente guardado (status {resp.status_code}) tel={telefono}")
+    except Exception as exc:
+        await bot_log(instancia, "error", "AgenteActivo", f"Error guardando turno agente: {exc}")
+
+
 # ── Procesamiento y envío (llamado tras el debounce) ─────────────────────────
 
 async def _procesar_y_enviar(data: dict) -> None:
@@ -286,6 +355,23 @@ async def _procesar_y_enviar(data: dict) -> None:
     tipo_contenido = data.get("tipo_contenido", "texto")
     telefono       = data.get("telefono", "desconocido")
     instancia      = data.get("instancia", "")
+
+    # ── Verificar si un humano está activo para esta conversación ─────────────
+    # Si el dueño escribió recientemente (fromMe=true), el bot NO responde.
+    # El CRM ya almacena los mensajes del cliente directamente desde Evolution,
+    # así que no necesitamos reenviarlos — solo evitar que el bot genere respuesta.
+    _clave_proc = f"{instancia}:{telefono}"
+    _ts_human   = _human_activo.get(_clave_proc)
+    if _ts_human is not None:
+        if (time.time() - _ts_human) < _HUMAN_TTL_SECS:
+            await bot_log(instancia, "info", "AgenteActivo",
+                          f"Humano activo → mensaje recibido, bot no responde tel={telefono}")
+            return
+        else:
+            # TTL expirado — el dueño no ha escrito en 2 horas; reactivar bot
+            _human_activo.pop(_clave_proc, None)
+            await bot_log(instancia, "info", "AgenteActivo",
+                          f"Humano TTL expirado → bot reactivado tel={telefono}")
     url_media      = data.get("url_media", "")
     caption        = data.get("caption", "")
     titulo_fb      = data.get("titulo_fb", "")
@@ -644,11 +730,17 @@ async def _ejecutar_debounce(clave: str) -> None:
     # Verificar si hay historial para decidir el tiempo de espera
     historial_cache = await obtener_historial(telefono, alternativas=alt_phones)
     es_primer_mensaje = not historial_cache
-    sleep_secs = 0 if es_primer_mensaje else DEBOUNCE_SECS
-
-    if es_primer_mensaje:
-        await bot_log(instancia, "info", "Debounce", f"primer mensaje → respuesta inmediata tel={telefono}")
+    # Facebook: respuesta inmediata (el contexto del anuncio ya define la intención)
+    # Contacto directo (no Facebook): esperar debounce para acumular mensajes y detectar urgencia
+    es_publicacion_fb = bool((data or {}).get("titulo_fb") or (data or {}).get("descripcion_fb"))
+    if es_primer_mensaje and es_publicacion_fb:
+        sleep_secs = 0
+        await bot_log(instancia, "info", "Debounce", f"primer mensaje (Facebook) → respuesta inmediata tel={telefono}")
+    elif es_primer_mensaje:
+        sleep_secs = DEBOUNCE_SECS
+        await bot_log(instancia, "info", "Debounce", f"primer mensaje (directo) → esperando {sleep_secs}s tel={telefono}")
     else:
+        sleep_secs = DEBOUNCE_SECS
         await bot_log(instancia, "info", "Debounce", f"historial detectado → esperando {sleep_secs}s tel={telefono}")
 
     try:
@@ -670,6 +762,99 @@ async def _ejecutar_debounce(clave: str) -> None:
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {"ok": True}
+
+
+@app.post("/mensaje-agente")
+async def mensaje_agente_endpoint(request: Request) -> dict[str, Any]:
+    """Endpoint que el CRM llama cuando un agente humano envía un mensaje a un cliente.
+
+    Pausa el bot inmediatamente para esa conversación y guarda el mensaje del agente
+    en el historial, de modo que el contexto quede completo al reactivar el bot.
+
+    Payload esperado (JSON):
+      telefono      — número del cliente (requerido)
+      instancia     — instancia de WhatsApp (requerido)
+      mensaje       — texto que escribió el agente (opcional)
+      remote_jid    — remoteJid del contacto (opcional, default = telefono)
+      agente_nombre — nombre del agente para el historial (opcional, default = "Agente")
+      api_token     — token de autenticación (o header X-API-Token)
+    """
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="El body debe ser JSON válido.") from exc
+
+    if INCOMING_TOKEN:
+        token = body.get("api_token") or request.headers.get("X-API-Token")
+        if token != INCOMING_TOKEN:
+            raise HTTPException(status_code=401, detail="Token de acceso inválido.")
+
+    telefono      = (body.get("telefono") or "").strip()
+    instancia     = (body.get("instancia") or "").strip()
+    mensaje       = (body.get("mensaje") or "").strip()
+    remote_jid    = (body.get("remote_jid") or telefono).strip()
+    agente_nombre = (body.get("agente_nombre") or "Agente").strip()
+
+    if not telefono:
+        raise HTTPException(status_code=400, detail="Falta el campo 'telefono'.")
+
+    # Cancelar cualquier tarea de debounce pendiente — el bot no debe responder
+    clave = f"{instancia}:{telefono}"
+    tarea = _pending_tasks.pop(clave, None)
+    if tarea and not tarea.done():
+        tarea.cancel()
+        await bot_log(instancia, "info", "AgenteActivo",
+                      f"Debounce cancelado por agente tel={telefono}")
+    _pending_data.pop(clave, None)
+
+    # Pausar el bot para esta conversación
+    await _pausar_por_agente(telefono, remote_jid, instancia)
+
+    # Guardar el mensaje del agente en historial (sin reenviarlo al cliente)
+    if mensaje:
+        asyncio.create_task(
+            _guardar_turno_agente(telefono, remote_jid, instancia, mensaje, agente_nombre)
+        )
+
+    await bot_log(instancia, "info", "AgenteActivo",
+                  f"Agente {agente_nombre!r} tomó conversación tel={telefono} msg={mensaje[:60]!r}")
+
+    return {"status": "ok", "pausado": True, "agente": agente_nombre}
+
+
+@app.post("/reactivar-bot")
+async def reactivar_bot(request: Request) -> dict[str, Any]:
+    """Reactiva el bot para una conversación que fue tomada por el dueño.
+
+    Elimina el flag de humano activo para que el bot vuelva a responder.
+    También puede remover el bloqueo en el CRM si se indica.
+
+    Payload: { telefono, instancia, api_token? }
+    """
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="El body debe ser JSON válido.") from exc
+
+    if INCOMING_TOKEN:
+        token = body.get("api_token") or request.headers.get("X-API-Token")
+        if token != INCOMING_TOKEN:
+            raise HTTPException(status_code=401, detail="Token de acceso inválido.")
+
+    telefono  = (body.get("telefono") or "").strip()
+    instancia = (body.get("instancia") or "").strip()
+
+    if not telefono:
+        raise HTTPException(status_code=400, detail="Falta el campo 'telefono'.")
+
+    clave = f"{instancia}:{telefono}"
+    estaba_activo = clave in _human_activo
+    _human_activo.pop(clave, None)
+
+    await bot_log(instancia, "info", "AgenteActivo",
+                  f"Bot reactivado manualmente tel={telefono} (estaba_activo={estaba_activo})")
+
+    return {"status": "ok", "bot_activo": True, "telefono": telefono}
 
 
 @app.post("/vitta4")
@@ -714,6 +899,38 @@ async def vitta4(request: Request) -> dict[str, Any]:
         num = _strip_jid(jid)
         if num and num != telefono:
             _alt_phones.append(num)
+
+    # ── Detección de mensaje enviado por el dueño del número (no por el bot) ────
+    # Dos señales posibles:
+    #   1. fromMe=true en el payload de Evolution (dueño escribe directo en WhatsApp)
+    #   2. tipo_remitente="agente"/"humano" enviado explícitamente por el CRM
+    # En ambos casos: pausar el bot y guardar el mensaje en historial para
+    # mantener el contexto completo cuando se reactive.
+    _evo_key   = (evo_data.get("data", {}) or {}).get("key", {}) or {}
+    _from_me   = bool(_evo_key.get("fromMe", False)) or str(body.get("fromMe", "")).lower() == "true"
+    _tipo_rem  = (body.get("tipo_remitente") or "").strip().lower()
+    _es_humano = _from_me or (_tipo_rem in ("agente", "humano", "asesor"))
+
+    if _es_humano:
+        _clave_h = f"{instancia}:{telefono}"
+        # Marcar conversación como "humano activo" — el bot no responderá mientras esté aquí
+        _human_activo[_clave_h] = time.time()
+        # Cancelar cualquier tarea de debounce pendiente
+        _tarea_h = _pending_tasks.pop(_clave_h, None)
+        if _tarea_h and not _tarea_h.done():
+            _tarea_h.cancel()
+        _pending_data.pop(_clave_h, None)
+        # Pausar en el CRM (blocked_numbers) para que el sistema lo refleje
+        asyncio.create_task(_pausar_por_agente(telefono, _remote_jid or telefono, instancia))
+        # Guardar el mensaje del dueño en historial para preservar el contexto
+        if mensaje:
+            _nombre_h = (body.get("agente_nombre") or body.get("contact_name") or "Humano").strip()
+            asyncio.create_task(_guardar_turno_agente(
+                telefono, _remote_jid or telefono, instancia, mensaje, _nombre_h
+            ))
+        await bot_log(instancia, "info", "AgenteActivo",
+                      f"Mensaje del dueño (fromMe={_from_me}) → pausando bot tel={telefono}")
+        return {"debounced": False, "humano": True}
 
     # ── Debounce: acumular mensajes del mismo contacto y procesar todos juntos ─
     clave = f"{instancia}:{telefono}"

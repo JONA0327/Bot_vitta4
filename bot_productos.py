@@ -676,7 +676,13 @@ async def _crm_get_entrenamiento(q: str | None = None, limit: int = 5, instancia
             data = resp.json()
             items = data.get("data") if isinstance(data, dict) and data.get("data") is not None else data
             if isinstance(items, list):
-                print(f"[CRM-ENTRENA] q={q!r} → {len(items)} pares")
+                print(f"[CRM-ENTRENA] q={q!r} → {len(items)} registros")
+                # Log de campos del primer registro para detectar estructura del CRM
+                if items:
+                    primer = items[0]
+                    claves_top = list(primer.keys()) if isinstance(primer, dict) else "no-dict"
+                    claves_datos = list(primer["datos"].keys()) if isinstance(primer, dict) and isinstance(primer.get("datos"), dict) else "sin-datos"
+                    print(f"[CRM-ENTRENA] estructura primer registro: top={claves_top} datos={claves_datos}")
                 return items
     except Exception as e:
         print(f"[CRM-ENTRENA] error: {e}")
@@ -686,19 +692,46 @@ async def _crm_get_entrenamiento(q: str | None = None, limit: int = 5, instancia
 def _formatear_ejemplos_entrenamiento(pares: list) -> str:
     """Convierte pares {pregunta, respuesta} en un bloque de texto para inyectar en system prompt.
 
-    Retorna cadena vacía si no hay pares.
+    Desenvuelve la capa 'datos' que el CRM envuelve en sus registros (igual que _pick_field).
+    También extrae prompt_generado si el CRM lo incluye.
+    Retorna cadena vacía si no hay pares ni instrucciones.
     """
     if not pares:
         return ""
     lineas = ["EJEMPLOS DE CONVERSACIÓN APROBADOS (usa estos como guía de tono y estilo):"]
+    prompts_extra: list[str] = []
     for p in pares:
-        pregunta = str(p.get("pregunta") or "").strip()
-        respuesta = str(p.get("respuesta") or "").strip()
+        # Desenvolver capa 'datos' — los registros del CRM anidan sus campos aquí
+        d = p.get("datos") if isinstance(p.get("datos"), dict) else p
+
+        pregunta = str(
+            d.get("pregunta") or d.get("question") or d.get("PREGUNTA") or
+            p.get("pregunta") or ""
+        ).strip()
+        respuesta = str(
+            d.get("respuesta") or d.get("response") or d.get("answer") or d.get("RESPUESTA") or
+            p.get("respuesta") or ""
+        ).strip()
         if pregunta and respuesta:
             lineas.append(f"Cliente: {pregunta}\nAsesor: {respuesta}")
-    if len(lineas) <= 1:
+
+        pg = str(
+            d.get("prompt_generado") or d.get("promptGenerado") or d.get("PROMPT_GENERADO") or
+            p.get("prompt_generado") or p.get("promptGenerado") or ""
+        ).strip()
+        if pg and pg not in prompts_extra:
+            prompts_extra.append(pg)
+
+    encontrados = len(lineas) - 1
+    print(f"[Entrenamiento] {len(pares)} registros CRM → {encontrados} pares usables, {len(prompts_extra)} prompts_generados")
+    if len(lineas) <= 1 and not prompts_extra:
         return ""
-    return "\n---\n".join(lineas)
+    parts: list[str] = []
+    if len(lineas) > 1:
+        parts.append("\n---\n".join(lineas))
+    if prompts_extra:
+        parts.append("INSTRUCCIONES DE ENTRENAMIENTO:\n" + "\n".join(f"- {pg}" for pg in prompts_extra))
+    return "\n\n".join(parts)
 
 
 def _pick_field(rec: dict, keys: List[str]) -> Optional[Any]:
@@ -2044,6 +2077,10 @@ async def responder_productos(
 
     # ── PASO 1: Primer contacto (sin historial o sin respuesta previa del bot) ─
     if not historial_texto.strip() or _contar_turnos_bot(historial_texto) == 0:
+        # Si el primer mensaje ya indica urgencia, no pedir el nombre — ir directo a empatía
+        if _es_urgente(texto_usuario):
+            print(f"[Urgencia] detectada en PASO1 → flujo urgencia desde primer contacto")
+            return await _responder_urgencia(texto_usuario, historial_texto, analisis, intencion)
         return await _responder_paso1(instancia, analisis, intencion)
 
     _turnos = _contar_turnos_bot(historial_texto)
