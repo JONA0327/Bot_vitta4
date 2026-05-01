@@ -568,6 +568,14 @@ async def procesar_contenido(
         img_analisis = await analizar_imagen(url_img) if url_img else None
         if img_analisis:
             analisis.update(img_analisis)
+            # Detectar si el caption solicita información o precio del producto
+            _caption_str = (caption or mensaje or "").lower()
+            if re.search(
+                r"\binfo\b|precio|informaci[oó]n|qu[eé]\s+es|para\s+qu[eé]|cuanto\s*cuesta|cu[aá]nto\s+vale",
+                _caption_str,
+            ):
+                analisis["solicitud_info_imagen"] = True
+                print(f"[Imagen] solicitud_info_imagen detectada caption={caption!r}")
             partes = [img_analisis.get("descripcion", "")]
             if caption:
                 partes.append(f"Caption: {caption}")

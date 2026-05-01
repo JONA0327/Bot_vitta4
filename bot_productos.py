@@ -1583,7 +1583,15 @@ async def _responder_paso1(instancia: str, analisis: dict | None = None, intenci
                 },
             )
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"].strip()
+            _resp_texto = resp.json()["choices"][0]["message"]["content"].strip()
+            # Si es solicitud de info/precio por imagen, embeber marker para que PASO 2
+            # pueda identificar el producto aunque el analisis ya no lo traiga.
+            _prods_p1 = _extraer_productos_contexto(analisis, intencion)
+            if analisis.get("solicitud_info_imagen") and _prods_p1:
+                _marker = "[[INFO_IMG:" + "|".join(_prods_p1[:3]) + "]]"
+                _resp_texto += f"\n{_marker}"
+                print(f"[PASO1] solicitud_info_imagen → marker embebido: {_marker}")
+            return _resp_texto
     except Exception:
         return None
 
@@ -2350,6 +2358,21 @@ async def responder_productos(
 
     # ── PASO 2: Segunda respuesta — manejo del nombre + pregunta sobre la compañía ──
     if not _en_urgencia and _turnos == 1:
+        # ── ATAJO INFO_IMAGEN: imagen con caption "info/precio" → producto ya identificado ──
+        # El marker [[INFO_IMG:...]] fue embebido en la respuesta de PASO1 y persiste en
+        # el historial. Cuando el usuario da su nombre, se intercepta aquí y se entrega
+        # la info del producto directamente sin pasar por el flujo completo.
+        _img_info_match = re.search(r"\[\[INFO_IMG:([^\]]+)\]\]", historial_texto)
+        if _img_info_match:
+            _prods_img_hist = [n.strip() for n in _img_info_match.group(1).split("|") if n.strip()]
+            if _prods_img_hist:
+                print(f"[PASO2] INFO_IMG marker → info directa: {_prods_img_hist}")
+                _res_img = await _responder_info_directa(
+                    texto_usuario, historial_texto, analisis, intencion, _prods_img_hist
+                )
+                if _res_img is not None:
+                    return _res_img
+                print(f"[PASO2] INFO_IMG: producto no en CRM → flujo normal")
         # ── ATAJO DIRECTO: producto específico en pauta o preguntado por el usuario ──
         # Si hay un producto concreto en el contexto, saltar PASO2/2B/PASO3 y dar
         # info del producto directamente (el usuario ya sabe lo que quiere).
