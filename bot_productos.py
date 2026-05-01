@@ -2176,9 +2176,9 @@ async def responder_productos(
     except Exception as _pv_e:
         print(f"[PostVideo] error: {_pv_e}")
 
-    # ── DETECCIÓN TEMPRANA DE PRECIO: pausar en cualquier etapa antes de PASO4 ──
-    # Si el usuario pregunta precio/costo al inicio o durante la entrevista,
-    # ya conoce los productos → pausar para que lo atienda un humano.
+    # ── DETECCIÓN DE PRECIO: pausar SOLO si ya se entregó info de productos ──
+    # Si el usuario pregunta precio ANTES de recibir info → seguir el flujo normal.
+    # Si pregunta precio DESPUÉS de que el bot ya envió productos → pausar para humano.
     _precio_pattern = re.compile(
         r"\b(precio|costo|cuánto|cuanto|cuánto cuesta|cuanto cuesta|cuánto vale|cuanto vale"
         r"|cuánto es|cuanto es|cuánto cobr|cuanto cobr|cuánto están|cuanto están"
@@ -2189,8 +2189,17 @@ async def responder_productos(
         re.IGNORECASE,
     )
     if _precio_pattern.search(texto_usuario):
-        print(f"[PrecioTemprano] precio detectado antes de PASO4 → pausando")
-        return {"texto": None, "pausar": True, "motivo": "precio_temprano"}
+        # Solo bloquear si el bot ya entregó información de productos
+        _info_ya_enviada = (
+            bool(re.search(r"\[\[PRODUTOS_IDS:", historial_texto))
+            or bool(re.search(r"deseas que te comparta los videos|deseas ver los videos", historial_texto, re.IGNORECASE))
+            or bool(re.search(r"\*[A-Za-záéíóúÁÉÍÓÚñÑ].{2,50}\*\n", historial_texto))
+        )
+        if _info_ya_enviada:
+            print(f"[Precio] detectado después de entregar info → pausando")
+            return {"texto": None, "pausar": True, "motivo": "precio_post_info"}
+        else:
+            print(f"[Precio] detectado antes de entregar info → continuar flujo")
 
     # ── PASO 1: Primer contacto (sin historial o sin respuesta previa del bot) ─
     if not historial_texto.strip() or _contar_turnos_bot(historial_texto) == 0:
