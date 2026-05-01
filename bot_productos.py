@@ -21,6 +21,7 @@ import os
 import re
 import json
 import httpx
+from difflib import SequenceMatcher
 from datetime import datetime
 import zoneinfo
 
@@ -423,7 +424,9 @@ _NOMBRES_COMPLETOS_4LIFE: dict[str, str] = {
     "pre-biotics":      "Pre-Biotics 4Life",
     "aloe vera":        "Aloe Vera Stix",
     "belle vie":        "Transfer Factor Belle Vie",
+    "tf belle vie":     "Transfer Factor Belle Vie",
     "burn":             "4Life Burn",
+    "4life burn":       "4Life Burn",
     "cardio4life":      "Cardio4Life",
     "riovida":          "RioVida",
     "rio vida":         "RioVida",
@@ -433,6 +436,34 @@ _NOMBRES_COMPLETOS_4LIFE: dict[str, str] = {
     "tea 4life":        "Tea4Life",
     "bioeFA":           "BioEFA",
     "bioefa":           "BioEFA",
+    # Abreviaciones Transfer Factor
+    "tf plus":          "Transfer Factor Plus",
+    "tfplus":           "Transfer Factor Plus",
+    "tf+":              "Transfer Factor Plus",
+    "transfer factor plus": "Transfer Factor Plus",
+    "tf tri-factor":    "Transfer Factor Tri-Factor Formula",
+    "tri factor":       "Transfer Factor Tri-Factor Formula",
+    "trifactor":        "Transfer Factor Tri-Factor Formula",
+    "tf tri factor":    "Transfer Factor Tri-Factor Formula",
+    "tf advanced":      "Transfer Factor Advanced Formula",
+    "tf riovida":       "Transfer Factor RioVida",
+    "tf riovida tri":   "Transfer Factor RioVida Tri-Factor Formula",
+    "tf boost":         "4Life TF Boost",
+    "tfboost":          "4Life TF Boost",
+    "boost":            "4Life TF Boost",
+    # Nombres en español / abreviaciones comunes
+    "avanzado":         "Transfer Factor Avanzado",
+    "advanced":         "Transfer Factor Advanced Formula",
+    "plus":             "Transfer Factor Plus",
+    "energie":          "Energy 4Life",
+    "energía":         "Energy 4Life",
+    "energia":          "Energy 4Life",
+    "energy":           "Energy 4Life",
+    "kids":             "4Life Kids",
+    "fibro":            "FibroAMJ 4Life",
+    "fibroamj":         "FibroAMJ 4Life",
+    "recall":           "4Life Recall",
+    "enummi":           "Enumōi",
 }
 
 
@@ -440,6 +471,70 @@ def _expandir_nombre_producto(nombre: str) -> str:
     """Devuelve el nombre completo oficial si el nombre recibido es una forma abreviada conocida."""
     key = nombre.strip().lower()
     return _NOMBRES_COMPLETOS_4LIFE.get(key, nombre)
+
+
+# ─── Fuzzy matching ────────────────────────────────────────────────────────────
+_FUZZY_THRESHOLD = 0.72  # mínimo para considerar "mismo producto"
+
+
+def _fuzzy_score(a: str, b: str) -> float:
+    """Similitud entre 0.0 y 1.0 combinando score de cadena completa y mejor par de tokens."""
+    if not a or not b:
+        return 0.0
+    score_full = SequenceMatcher(None, a, b).ratio()
+    ta_list = [t for t in a.split() if len(t) >= 3]
+    tb_list = [t for t in b.split() if len(t) >= 3]
+    best_tok = 0.0
+    for ta in ta_list:
+        for tb in tb_list:
+            r = SequenceMatcher(None, ta, tb).ratio()
+            if r > best_tok:
+                best_tok = r
+    return max(score_full, best_tok * 0.88)
+
+
+def _fuzzy_match_catalogo(nombre_buscado: str, todos_productos: list) -> dict | None:
+    """Retorna el producto del catálogo que más se parece al nombre buscado.
+
+    Estrategia (prioridad):
+    1. Coincidencia exacta por substring (sin importar mayúsculas).
+    2. Todos los tokens significativos del nombre buscado presentes en el producto.
+    3. Similitud difusa (SequenceMatcher) >= _FUZZY_THRESHOLD — tolera errores tipográficos.
+    Retorna None si no supera el umbral.
+    """
+    nombre_norm = _expandir_nombre_producto(nombre_buscado).lower().strip()
+    if not nombre_norm:
+        return None
+    tokens_norm = [t for t in nombre_norm.split() if len(t) >= 3]
+    mejor_score = 0.0
+    mejor_prod: dict | None = None
+
+    for prod in todos_productos:
+        nombre_prod = str(
+            _pick_field(prod, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
+        ).lower().strip()
+        if not nombre_prod:
+            continue
+        # 1. Coincidencia por substring exacto
+        if nombre_norm in nombre_prod or nombre_prod in nombre_norm:
+            return prod
+        # 2. Todos los tokens significativos presentes en el nombre del producto
+        tokens_prod = nombre_prod.split()
+        if tokens_norm and all(any(SequenceMatcher(None, tn, tp).ratio() >= 0.80 for tp in tokens_prod) for tn in tokens_norm):
+            return prod
+        # 3. Score difuso global
+        score = _fuzzy_score(nombre_norm, nombre_prod)
+        if score > mejor_score:
+            mejor_score = score
+            mejor_prod = prod
+
+    if mejor_score >= _FUZZY_THRESHOLD and mejor_prod is not None:
+        nombre_ganador = str(
+            _pick_field(mejor_prod, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
+        )
+        print(f"[Fuzzy] '{nombre_buscado}' → '{nombre_ganador}' score={mejor_score:.2f}")
+        return mejor_prod
+    return None
 
 
 def _extraer_productos_contexto(analisis: dict, intencion: dict) -> list[str]:
@@ -1573,24 +1668,18 @@ def _construir_pregunta_indagacion(analisis: dict, intencion: dict, historial_te
 
 
 async def _buscar_info_producto_crm(nombre_producto: str) -> str:
-    """Busca un producto en el CRM por nombre y retorna su descripción, o cadena vacía."""
+    """Busca un producto en el CRM por nombre (con fuzzy matching) y retorna su descripción."""
     if not nombre_producto:
         return ""
     try:
         todos = await _obtener_todos_productos()
-        nombre_norm = _expandir_nombre_producto(nombre_producto).lower().strip()
-        for prod in todos:
-            nombre_prod = str(
-                _pick_field(prod, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
-            ).lower().strip()
-            if nombre_norm and nombre_prod and (
-                nombre_norm in nombre_prod or nombre_prod in nombre_norm
-            ):
-                desc = str(_pick_field(prod, ["DESCRIPCION", "descripcion", "description"]) or "").strip()
-                nombre_oficial = str(
-                    _pick_field(prod, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or nombre_producto
-                ).strip()
-                return f"{nombre_oficial}: {desc}" if desc else nombre_oficial
+        prod = _fuzzy_match_catalogo(nombre_producto, todos)
+        if prod:
+            desc = str(_pick_field(prod, ["DESCRIPCION", "descripcion", "description"]) or "").strip()
+            nombre_oficial = str(
+                _pick_field(prod, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or nombre_producto
+            ).strip()
+            return f"{nombre_oficial}: {desc}" if desc else nombre_oficial
     except Exception as e:
         print(f"[CRM-INFO-PROD] error buscando '{nombre_producto}': {e}")
     return ""
@@ -1613,30 +1702,26 @@ async def _responder_info_directa(
     if not OPENAI_API_KEY:
         return None
 
-    # ── 1. Buscar los productos en el CRM ─────────────────────────────────────
+    # ── 1. Buscar los productos en el CRM (fuzzy matching — tolera errores tipográficos) ────
     todos = await _obtener_todos_productos()
-    disp  = [p for p in todos if _is_disponible(p)]
     encontrados: list[dict] = []
-    # Buscar en todos los productos (incluye no disponibles para la detección por nombre)
-    todos_para_busqueda = todos
+    no_encontrados: list[str] = []
+
     for nombre_pedido in productos_objetivo:
-        nombre_norm = _expandir_nombre_producto(nombre_pedido).lower().strip()
-        for prod in todos_para_busqueda:
-            nombre_prod = str(
-                _pick_field(prod, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
-            ).lower().strip()
-            if nombre_norm and nombre_prod and (
-                nombre_norm in nombre_prod or nombre_prod in nombre_norm
-            ):
-                if prod not in encontrados:
-                    encontrados.append(prod)
-                break
+        prod = _fuzzy_match_catalogo(nombre_pedido, todos)
+        if prod and prod not in encontrados:
+            encontrados.append(prod)
+        elif not prod:
+            no_encontrados.append(nombre_pedido)
+            print(f"[InfoDirecta] '{nombre_pedido}' NO encontrado en catálogo — se omite")
 
     if not encontrados:
-        print(f"[InfoDirecta] ningún producto encontrado para {productos_objetivo}")
+        print(f"[InfoDirecta] ningún producto del catálogo encontrado para {productos_objetivo}")
         return None
 
-    print(f"[InfoDirecta] productos encontrados={len(encontrados)} para {productos_objetivo}")
+    if no_encontrados:
+        print(f"[InfoDirecta] omitidos (no en catálogo): {no_encontrados}")
+    print(f"[InfoDirecta] productos enviando={len(encontrados)} de {len(productos_objetivo)} pedidos")
 
     # ── 2. Construir contexto para el LLM (mismo formato que PASO4) ───────────
     import json as _json
@@ -1734,27 +1819,34 @@ async def _responder_paso2(
     intencion: dict,
 ) -> str | None:
     """PASO 2 — Manejo del nombre + pregunta sobre conocimiento de la compañía.
-    Si en el primer mensaje del usuario se detectó una pregunta de info de producto,
-    busca en el CRM e inyecta la info para que el bot la responda en este turno.
+    Si hay productos detectados (pauta o mensaje del usuario), redirige a
+    _responder_info_directa para garantizar el formato con [[PRODUTOS_IDS:...]].
     """
-    # ── Detectar si el primer mensaje del usuario preguntó por info de un producto ──
-    _info_producto_ctx = ""
-    msgs_usuario = re.findall(r"(?:^|\n)Usuario:\s*(.*?)(?=\nBot:|\Z)", historial_texto, re.DOTALL)
-    primer_mensaje = msgs_usuario[0].strip() if msgs_usuario else ""
-    _nombre_prod_preguntado = _detectar_pregunta_info_producto(primer_mensaje) or _detectar_pregunta_info_producto(texto_usuario)
-    if _nombre_prod_preguntado:
-        _info_crm = await _buscar_info_producto_crm(_nombre_prod_preguntado)
-        if _info_crm:
-            _info_producto_ctx = f"\nINFO_PRODUCTO_CRM: {_info_crm}"
-            print(f"[PASO2] info producto CRM encontrada para '{_nombre_prod_preguntado}'")
-        else:
-            print(f"[PASO2] producto '{_nombre_prod_preguntado}' no encontrado en CRM")
+    # ── Redirección a info directa (red de seguridad si el atajo del routing la pasó) ──
+    _productos_p2: list[str] = _extraer_productos_contexto(analisis, intencion)
+    if not _productos_p2:
+        _productos_p2 = [p for p in (intencion.get("productos_mencionados") or []) if p]
+    if not _productos_p2:
+        _msgs_u2 = re.findall(r"(?:^|\n)Usuario:\s*(.*?)(?=\nBot:|\Z)", historial_texto, re.DOTALL)
+        _primer_u2 = (_msgs_u2[0].strip() if _msgs_u2 else "") or texto_usuario
+        _prod_p2 = _detectar_pregunta_info_producto(_primer_u2)
+        if _prod_p2:
+            _productos_p2 = [_prod_p2]
+    if _productos_p2:
+        print(f"[PASO2-Redirect] productos detectados → info directa: {_productos_p2}")
+        _res_directa = await _responder_info_directa(
+            texto_usuario, historial_texto, analisis, intencion, _productos_p2
+        )
+        if _res_directa is not None:
+            return _res_directa
+        print(f"[PASO2-Redirect] producto no en CRM → flujo normal PASO2")
 
+    # ── Flujo normal: sin productos detectados o no encontrados en CRM ──
     _pares_p2 = _formatear_ejemplos_entrenamiento(
         await _crm_get_entrenamiento(q=texto_usuario, limit=3)
     )
     messages = [
-        {"role": "system", "content": _PASO2_SYSTEM + _info_producto_ctx + _construir_addon_reglas("paso2")},
+        {"role": "system", "content": _PASO2_SYSTEM + _construir_addon_reglas("paso2")},
     ]
     if _pares_p2:
         messages.append({"role": "system", "content": _pares_p2})
