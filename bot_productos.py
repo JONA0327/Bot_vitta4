@@ -86,70 +86,6 @@ def _construir_addon_reglas(paso: str) -> str:
         + "\n---"
     )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Catálogo base de productos 4Life (se amplía con PRODUCTOS_EXTRA_JSON en .env)
-# ─────────────────────────────────────────────────────────────────────────────
-_CATALOGO_BASE = """
-PRODUCTOS DESTACADOS DE 4LIFE:
-
-1. Transfer Factor Plus Tri-Factor Formula
-   - El producto estrella. Educa y fortalece el sistema inmune.
-   - Eleva la actividad de las células NK hasta un 437%.
-   - Indicado para: inmunidad general, personas mayores, post-enfermedad.
-
-2. Transfer Factor Riovida
-   - Bebida antioxidante con Transfer Factor + jugos de frutas del bosque.
-   - Ideal para: energía diaria, bienestar general, fácil de tomar.
-
-3. Transfer Factor Tri-Factor Formula (clásico)
-   - Base inmunológica para toda la familia.
-   - Más accesible en precio que el Plus.
-
-4. 4Life Transform Burn
-   - Quema de grasa + energía. Con CLA y cafeína natural.
-   - Para: pérdida de peso, metabolismo activo.
-
-5. 4Life Transform Go
-   - Bebida energética con Transfer Factor. Sin azúcar.
-
-6. ProTF (Proteína con Transfer Factor)
-   - Batido de proteína de suero + soporte inmune.
-   - Ideal post-entrenamiento o como sustituto de comida.
-
-7. Digestive 4Life
-   - Salud digestiva: enzimas + probióticos + Transfer Factor.
-   - Para: digestión lenta, inflamación, bienestar intestinal.
-
-8. NanoFactor
-   - Fracción nanofiltrada del calostro bovino. Máxima concentración.
-
-9. 4Life Transfer Factor Belle Vie
-   - Para la mujer: equilibrio hormonal + bienestar emocional.
-
-10. BioEFA
-    - Ácidos grasos esenciales (Omega 3-6-9). Salud cardiovascular y cerebral.
-"""
-
-# Se puede sobreescribir/ampliar con JSON en la variable de entorno
-_catalogo_extra = os.getenv("PRODUCTOS_EXTRA_JSON", "")
-if _catalogo_extra:
-    try:
-        _CATALOGO_BASE += "\n\nPRODUCTOS ADICIONALES:\n" + _catalogo_extra
-    except Exception:
-        pass
-
-
-def _producto_en_catalogo(nombre: str) -> bool:
-    """Devuelve True si el nombre (o sus palabras clave) aparece en el catálogo completo."""
-    if not nombre:
-        return False
-    texto_cat = _CATALOGO_BASE.lower()
-    palabras = [p for p in re.split(r"\W+", nombre.lower()) if len(p) > 2]
-    if not palabras:
-        return False
-    # Basta con que al menos la mitad de las palabras clave estén en el catálogo
-    hits = sum(1 for p in palabras if p in texto_cat)
-    return hits >= max(1, len(palabras) // 2)
 
 
 def _detectar_pregunta_info_producto(texto: str) -> str:
@@ -196,8 +132,7 @@ REGLAS CRÍTICAS:
 - No inventes precios. Di: "te paso el precio especial".
 - Termina con UN cierre simple: "¿Te explico cómo pedirlo? 😊" o "¿Quieres que te dé más detalle?"
 
-CATÁLOGO DISPONIBLE (ÚNICA fuente de productos a recomendar):
-{_CATALOGO_BASE}
+Los productos disponibles provienen exclusivamente del catálogo del CRM y se pasan en cada consulta.
 """
 
 # Prompt exclusivo para el primer contacto (PASO 1)
@@ -1705,10 +1640,6 @@ async def _responder_paso3(
     if _pares_p3:
         messages.append({"role": "system", "content": _pares_p3})
     messages.extend([
-        {
-            "role": "system",
-            "content": f"CATÁLOGO DE PRODUCTOS (para explicar brevemente si el cliente pregunta qué es el producto):\n{_CATALOGO_BASE}",
-        },
         {
             "role": "system",
             "content": f"HISTORIAL:\n{historial_texto}",
