@@ -1690,7 +1690,7 @@ async def _responder_info_directa(
                 break
         bloque: dict = {"texto": f"*{prod_nombre}*\n{prod_desc}"}
         if img_url and not img_url.startswith("data:"):
-            bloque["imagen"] = _make_absolute_url(img_url)
+            bloque["medios"] = [{"tipo": "imagen", "url": _make_absolute_url(img_url), "caption": prod_nombre}]
         mensagens.append(bloque)
 
     # Último mensaje: pregunta de videos + marcador de IDs
