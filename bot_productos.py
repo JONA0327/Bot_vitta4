@@ -1276,6 +1276,29 @@ async def _buscar_en_catalogos(
 
     print(f"[CRMCAT] buscar_en_catalogos condicion='{condicion_detectada}' sintomas={sintomas} causas={causas_posibles} productos_hist={productos_hist}")
 
+    # ── 0) Si el cliente pidió productos ESPECÍFICOS: buscar solo esos ────────
+    # NO hacer búsqueda semántica. Si el producto exacto no está en catálogo,
+    # retornar vacío → PASO4 pausa para que un humano responda.
+    if productos_hist:
+        todos_esp = await _obtener_todos_productos()
+        disp_esp  = [p for p in todos_esp if _is_disponible(p)]
+        encontrados_esp: list = []
+        for nombre_pedido in productos_hist:
+            # Expandir abreviaciones conocidas (ej. "TF Plus" → "Transfer Factor Plus")
+            nombre_norm = _expandir_nombre_producto(nombre_pedido).lower().strip()
+            for prod in disp_esp:
+                nombre_prod = str(
+                    _pick_field(prod, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
+                ).lower().strip()
+                if nombre_norm and nombre_prod and (
+                    nombre_norm in nombre_prod or nombre_prod in nombre_norm
+                ):
+                    if prod not in encontrados_esp:
+                        encontrados_esp.append(prod)
+        print(f"[CRMCAT] búsqueda específica: pedidos={productos_hist} → {len(encontrados_esp)} encontrados")
+        # Retornar solo lo encontrado. Si vacío → dispara sin_productos_catalogo en PASO4.
+        return encontrados_esp, None
+
     product_records: list = []
     paquete_info: dict | None = None
 
@@ -1353,27 +1376,6 @@ async def _buscar_en_catalogos(
             )
         elif todos_productos:
             product_records = [p for p in todos_productos if _is_disponible(p)][:3]
-
-    # ── 4) Filtrar por productos mencionados en publicación FB (si aplica) ────
-    items_fb = list(analisis.get("items") or []) if isinstance(analisis.get("items"), list) else []
-    filtro_nombres = [p.lower() for p in productos_hist if p] + [p.lower() for p in items_fb if p]
-    seen: set = set()
-    filtro_unico = []
-    for n in filtro_nombres:
-        if n not in seen:
-            seen.add(n)
-            filtro_unico.append(n)
-
-    if filtro_unico and product_records:
-        filtered = [
-            pr for pr in product_records
-            if any(
-                fb in str(_pick_field(pr, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or "").lower()
-                for fb in filtro_unico
-            )
-        ]
-        if filtered:
-            return filtered, paquete_info
 
     return product_records, paquete_info
 
