@@ -16,8 +16,10 @@ load_dotenv()
 from fastapi import FastAPI, HTTPException, Request
 
 from BotLogger import CRM_API_TOKEN, CRM_TENANT, CRM_URL, bot_log
-import bot_productos as _bot_productos_module
-from bot_productos import responder_productos
+# import bot_productos as _bot_productos_module
+# from bot_productos import responder_productos
+import Bot_Productos_v2 as _bot_productos_module
+from Bot_Productos_v2 import responder_productos
 from Filtro_Mensajes import (
     _descargar_imagen_base64,
     analizar_conversacion_entrenamiento,
@@ -453,7 +455,8 @@ async def _procesar_y_enviar(data: dict) -> None:
     tipo_intencion = (intencion.get("intencion") or "").lower()
     es_flujo_negocio_puro = tipo_intencion == "negocio" and not historial_texto.strip()
     flujo = "negocio/genérico" if es_flujo_negocio_puro else "productos"
-    from bot_productos import _contar_turnos_bot, PASO3_SIGNAL
+    # from bot_productos import _contar_turnos_bot, PASO3_SIGNAL
+    from Bot_Productos_v2 import _contar_turnos_bot, PASO3_SIGNAL
     _turnos_bot = _contar_turnos_bot(historial_texto)
     _MARKER_PASO3 = "Estoy examinando tu situación"
     if not historial_texto.strip() or _turnos_bot == 0:
