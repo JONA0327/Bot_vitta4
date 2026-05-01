@@ -157,9 +157,9 @@ Ejemplo de formato correcto (2 líneas máximo):
 ¿Con quién tengo el gusto?"
 
 SI el usuario llegó desde una publicación de Facebook y hay PRODUCTOS DETECTADOS:
-- Menciona 1 o 2 de esos productos por su nombre COMPLETO exactamente como aparece en la lista.
-  Ej: "vi que te interesó el Digestive 4Life y el Aloe Vera Stix".
-- USA el nombre completo del producto siempre (ej. "Digestive 4Life", NO solo "Digestive").
+- Menciona ÚNICAMENTE los productos que aparecen en la lista "PRODUCTOS INDIVIDUALES DETECTADOS" del contexto.
+  NO inventes ni menciones ningún producto que no esté en esa lista.
+- USA el nombre completo del producto exactamente como aparece en la lista.
 - Si el producto tiene nombre compuesto (ej. "Transfer Factor Plus"), úsalo completo.
 - NO menciones la marca '4Life' por separado como si fuera otro producto — va dentro del nombre.
 - Cierra pidiendo el nombre. Total: máximo 2 líneas.
@@ -1573,6 +1573,135 @@ async def _buscar_info_producto_crm(nombre_producto: str) -> str:
     return ""
 
 
+async def _responder_info_directa(
+    texto_usuario: str,
+    historial_texto: str,
+    analisis: dict,
+    intencion: dict,
+    productos_objetivo: list[str],
+) -> dict | None:
+    """Atajo directo a info de producto — salta PASO2/2B/PASO3.
+
+    Se activa cuando el usuario viene de una pauta con producto(s) específico(s) o
+    preguntó directamente por un producto. Recoge el nombre del usuario (si lo dio),
+    busca los productos en el CRM y retorna la info formateada igual que PASO4
+    (mismo formato multi-mensaje con imágenes y marcador [[PRODUTOS_IDS:...]]).
+    """
+    if not OPENAI_API_KEY:
+        return None
+
+    # ── 1. Buscar los productos en el CRM ─────────────────────────────────────
+    todos = await _obtener_todos_productos()
+    disp  = [p for p in todos if _is_disponible(p)]
+    encontrados: list[dict] = []
+    for nombre_pedido in productos_objetivo:
+        nombre_norm = _expandir_nombre_producto(nombre_pedido).lower().strip()
+        for prod in disp:
+            nombre_prod = str(
+                _pick_field(prod, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or ""
+            ).lower().strip()
+            if nombre_norm and nombre_prod and (
+                nombre_norm in nombre_prod or nombre_prod in nombre_norm
+            ):
+                if prod not in encontrados:
+                    encontrados.append(prod)
+                break
+
+    if not encontrados:
+        print(f"[InfoDirecta] ningún producto encontrado para {productos_objetivo}")
+        return None
+
+    print(f"[InfoDirecta] productos encontrados={len(encontrados)} para {productos_objetivo}")
+
+    # ── 2. Construir contexto para el LLM (mismo formato que PASO4) ───────────
+    import json as _json
+
+    partes_prod = []
+    img_map: dict[str, str] = {}
+    for p in encontrados[:6]:
+        nombre  = str(_pick_field(p, ["PRODUCTO", "producto", "NOMBRE", "nombre", "title"]) or "")
+        desc    = str(_pick_field(p, ["DESCRIPCION", "descripcion", "description"]) or "")
+        imagen  = _pick_imagen(p)
+        partes_prod.append(f"Nombre: {nombre}\nDescripción: {desc}")
+        if nombre and imagen:
+            img_map[nombre.lower()] = imagen
+
+    ids_str    = "|".join(str(p.get("id", "")) for p in encontrados[:6] if p.get("id"))
+    ids_marker = f"[[PRODUTOS_IDS:{ids_str}]]" if ids_str else ""
+
+    instruccion = (
+        "El cliente preguntó directamente por este/estos productos. "
+        "Presenta cada producto brevemente: qué es y para qué sirve en 1-2 frases directas y naturales. "
+        "SOLO usa los productos listados. "
+        "Al final pregunta si quiere ver más detalles o videos. "
+        "Responde SOLO con JSON válido:\n"
+        '{"intro": "1 frase breve de saludo/reconocimiento del nombre si lo dio", '
+        '"productos": [{"nombre": "nombre exacto del producto", "descripcion": "1-2 frases directas"}]}'
+    )
+
+    user_prompt = (
+        "Productos del catálogo:\n"
+        + "\n---\n".join(partes_prod)
+        + f"\n\nHistorial:\n{historial_texto}\n\n{instruccion}"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0.75,
+                    "max_tokens": 600,
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": _PRODUCTOS_SYSTEM + _construir_addon_reglas("productos")},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                },
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"[InfoDirecta] error LLM: {e}")
+        return None
+
+    try:
+        llm_data  = _json.loads(raw)
+        intro     = str(llm_data.get("intro") or "").strip()
+        llm_prods = llm_data.get("productos") or []
+    except Exception:
+        return None
+
+    if not intro or not llm_prods:
+        return None
+
+    mensagens: list[dict] = [{"texto": intro}]
+    for prod_info in llm_prods[:6]:
+        prod_nombre = str(prod_info.get("nombre") or "").strip()
+        prod_desc   = str(prod_info.get("descripcion") or "").strip()
+        if not prod_nombre:
+            continue
+        img_url = ""
+        for key, url in img_map.items():
+            if key in prod_nombre.lower() or prod_nombre.lower() in key:
+                img_url = url
+                break
+        bloque: dict = {"texto": f"*{prod_nombre}*\n{prod_desc}"}
+        if img_url and not img_url.startswith("data:"):
+            bloque["imagen"] = _make_absolute_url(img_url)
+        mensagens.append(bloque)
+
+    # Último mensaje: pregunta de videos + marcador de IDs
+    texto_cierre = "¿Deseas que te comparta los videos de estos productos? Responde *sí* o *no* 😊"
+    if ids_marker:
+        texto_cierre += f"\n{ids_marker}"
+    mensagens.append({"texto": texto_cierre})
+
+    return {"mensagens": mensagens}
+
+
 async def _responder_paso2(
     texto_usuario: str,
     historial_texto: str,
@@ -2095,6 +2224,26 @@ async def responder_productos(
 
     # ── PASO 2: Segunda respuesta — manejo del nombre + pregunta sobre la compañía ──
     if not _en_urgencia and _turnos == 1:
+        # ── ATAJO DIRECTO: producto específico en pauta o preguntado por el usuario ──
+        # Si hay un producto concreto en el contexto, saltar PASO2/2B/PASO3 y dar
+        # info del producto directamente (el usuario ya sabe lo que quiere).
+        _productos_directos = _extraer_productos_contexto(analisis, intencion)
+        if not _productos_directos:
+            # Revisar si el primer mensaje del usuario preguntó por un producto específico
+            _msgs_u = re.findall(r"(?:^|\n)Usuario:\s*(.*?)(?=\nBot:|\Z)", historial_texto, re.DOTALL)
+            _primer_msg_u = _msgs_u[0].strip() if _msgs_u else ""
+            _prod_preguntado = _detectar_pregunta_info_producto(_primer_msg_u)
+            if _prod_preguntado:
+                _productos_directos = [_prod_preguntado]
+        if _productos_directos:
+            print(f"[Atajo] producto(s) específico(s) detectados → info directa: {_productos_directos}")
+            _resultado_directo = await _responder_info_directa(
+                texto_usuario, historial_texto, analisis, intencion, _productos_directos
+            )
+            if _resultado_directo is not None:
+                return _resultado_directo
+            # Si no encontró el producto en CRM, caer al flujo normal
+            print(f"[Atajo] producto no en CRM → flujo normal")
         return await _responder_paso2(texto_usuario, historial_texto, analisis, intencion)
 
     # ── PASO 2B: Respuesta al conocimiento de la compañía + pregunta de padecimiento ──
