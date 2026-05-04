@@ -377,17 +377,24 @@ async def _cargar_reglas_crm() -> dict:
 
 # ── System prompt builder ─────────────────────────────────────────────────────
 
+def _nombre_desde_instancia(instancia: str) -> str:
+    """Converts an instance name like 'vitta4_valeria' → 'Vitta4 Valeria'."""
+    return instancia.replace("-", " ").replace("_", " ").title()
+
+
 def _construir_system_prompt(
     contexto_productos: str,
     ejemplos_entrenamiento: str,
     instrucciones_analisis: str,
     temas_repetidos: list[str],
+    bot_nombre: str = "",
 ) -> str:
-    hora = _saludo_hora()
+    hora       = _saludo_hora()
+    nombre_bot = bot_nombre or BOT_NOMBRE or "Asesora"
 
     # NOTE: user input is NEVER included here — it goes as role:user in the messages array.
     partes: list[str] = [
-        f"""Eres {BOT_NOMBRE}, asesora de bienestar y productos 4Life. Eres cálida, profesional y empática.
+        f"""Eres {nombre_bot}, asesora de bienestar y productos 4Life. Eres cálida, profesional y empática.
 Tu misión es brindar información sobre los productos y ofertas exclusivas de 4Life.
 
 FORMA DE CONVERSAR:
@@ -497,11 +504,15 @@ async def generar_respuesta(
 
     temas_repetidos = _detectar_temas_repetidos(historial_crm)
 
+    # Derive bot name: env var takes priority, else use formatted instancia name
+    bot_nombre = BOT_NOMBRE or _nombre_desde_instancia(instancia)
+
     system_prompt = _construir_system_prompt(
         contexto_productos=contexto_productos,
         ejemplos_entrenamiento=ejemplos,
         instrucciones_analisis=instrucciones,
         temas_repetidos=temas_repetidos,
+        bot_nombre=bot_nombre,
     )
 
     # Build messages: history + current user message

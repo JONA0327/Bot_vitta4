@@ -294,12 +294,13 @@ async def analizar_imagen(url_imagen: str, caption: str = "") -> dict:
     if not OPENAI_API_KEY:
         return {**_default_err, "descripcion": "Sin API key — imagen no analizada"}
 
-    # Descargar imagen para evitar problemas con URLs CDN que expiran
-    data_uri  = await _descargar_imagen_base64(url_imagen)
-    url_final = data_uri or url_imagen
+    # Descargar imagen — si falla no intentamos la URL cruda (WhatsApp requiere auth)
+    data_uri = await _descargar_imagen_base64(url_imagen)
+    if not data_uri:
+        return {**_default_err, "descripcion": "No se pudo descargar la imagen — ignorada"}
 
     user_content: list = [
-        {"type": "image_url", "image_url": {"url": url_final, "detail": "low"}},
+        {"type": "image_url", "image_url": {"url": data_uri, "detail": "low"}},
     ]
     texto = "Analiza esta imagen."
     if caption:
