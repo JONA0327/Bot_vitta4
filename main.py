@@ -204,9 +204,14 @@ async def _enviar_respuesta(
     if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN):
         print("[Send] CRM no configurado — respuesta no enviada", flush=True)
         return
+    print(
+        f"[Send] → CRM /bot-send  tel={telefono}  inst={instancia}  "
+        f"resp_len={len(respuesta)}  preview='{respuesta[:60].strip()}'",
+        flush=True,
+    )
     try:
         async with httpx.AsyncClient(timeout=CRM_TIMEOUT) as client:
-            await client.post(
+            r = await client.post(
                 f"{CRM_URL}/api/v1/{CRM_TENANT}/bot-send",
                 headers={"X-API-Key": CRM_API_TOKEN},
                 json={
@@ -218,8 +223,13 @@ async def _enviar_respuesta(
                     "contact_name": contact_name or None,
                 },
             )
+        print(
+            f"[Send] ✅ CRM respondió HTTP {r.status_code} — "
+            f"Evolution enviará el msg al contacto",
+            flush=True,
+        )
     except Exception as e:
-        print(f"[Send] error: {e}", flush=True)
+        print(f"[Send] ❌ error al enviar al CRM: {e}", flush=True)
 
 
 async def _bloquear_contacto(
@@ -291,6 +301,10 @@ async def _procesar_mensaje(datos: dict) -> None:
 
     # 2. Get conversation history
     historial = await obtener_historial(telefono, limit=15)
+    print(
+        f"[Historial] {telefono} → {len(historial)} turno(s) en CRM",
+        flush=True,
+    )
 
     # 3. Resolve effective message text
     # For audio: use Whisper transcript; for image: use caption or original message
@@ -305,6 +319,7 @@ async def _procesar_mensaje(datos: dict) -> None:
         return
 
     # 4. Generate adaptive response
+    print(f"[GPT] {telefono} generando respuesta…", flush=True)
     respuesta = await _responder_module.generar_respuesta(
         mensaje=mensaje_efectivo,
         historial_crm=historial,
@@ -314,9 +329,16 @@ async def _procesar_mensaje(datos: dict) -> None:
     )
 
     if not respuesta:
+        print(f"[GPT] {telefono} ❌ respuesta vacía — no se envía", flush=True)
         return
 
-    # 5. Send response via CRM
+    print(
+        f"[GPT] {telefono} ✅ respuesta generada ({len(respuesta)} chars) — "
+        f"'{respuesta[:60].strip()}'…",
+        flush=True,
+    )
+
+    # 5. Send response via CRM → Evolution API
     await _enviar_respuesta(
         telefono, remote_jid, instancia, respuesta, mensaje_efectivo, contact_name,
     )

@@ -492,10 +492,11 @@ async def generar_respuesta(
     Returns the response text, or empty string on error.
     """
     if not OPENAI_API_KEY:
-        print("[Responder] OPENAI_API_KEY no configurada")
+        print("[Responder] OPENAI_API_KEY no configurada", flush=True)
         return ""
 
     # Fetch all context sources concurrently
+    print(f"[Responder] {telefono} cargando contexto (productos + entrenamiento + análisis)…", flush=True)
     contexto_productos, ejemplos, instrucciones = await asyncio.gather(
         _obtener_productos(),
         _buscar_entrenamiento(mensaje),
@@ -506,6 +507,15 @@ async def generar_respuesta(
 
     # Derive bot name: env var takes priority, else use formatted instancia name
     bot_nombre = BOT_NOMBRE or _nombre_desde_instancia(instancia)
+
+    print(
+        f"[Responder] {telefono}  bot={bot_nombre}  "
+        f"productos={'sí' if contexto_productos else 'no'}  "
+        f"ejemplos={'sí' if ejemplos else 'no'}  "
+        f"análisis={'sí' if instrucciones else 'no'}  "
+        f"temas_repetidos={temas_repetidos or 'ninguno'}",
+        flush=True,
+    )
 
     system_prompt = _construir_system_prompt(
         contexto_productos=contexto_productos,
@@ -518,6 +528,13 @@ async def generar_respuesta(
     # Build messages: history + current user message
     mensajes = _historial_a_mensajes(historial_crm)
     mensajes.append({"role": "user", "content": mensaje})  # user input never in system prompt
+
+    print(
+        f"[Responder] {telefono} → GPT-4o-mini  "
+        f"sys_prompt={len(system_prompt)}ch  "
+        f"mensajes={len(mensajes)} (incluyendo actual)",
+        flush=True,
+    )
 
     try:
         async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
@@ -536,11 +553,18 @@ async def generar_respuesta(
             )
             resp.raise_for_status()
             respuesta = resp.json()["choices"][0]["message"]["content"].strip()
+            tokens = resp.json().get("usage", {})
+            print(
+                f"[Responder] {telefono} ✅ GPT respondió  "
+                f"tokens=({tokens.get('prompt_tokens','?')}p + {tokens.get('completion_tokens','?')}c)",
+                flush=True,
+            )
     except Exception as e:
-        print(f"[Responder] error OpenAI: {e}")
+        print(f"[Responder] {telefono} ❌ error OpenAI: {e}", flush=True)
         return ""
 
     # Save Q&A pair for future human review and training (non-blocking)
     asyncio.create_task(_guardar_entrenamiento_bg(mensaje, respuesta, telefono, instancia))
+    print(f"[Entrena·BG] {telefono} par guardado en background", flush=True)
 
     return respuesta
