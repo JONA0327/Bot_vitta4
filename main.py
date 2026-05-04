@@ -340,7 +340,7 @@ async def health() -> dict:
     return {"status": "ok", "bot": "4Life Vitta"}
 
 
-@app.post("/mensaje")
+@app.post("/vitta4")
 async def recibir_mensaje(payload: MensajePayload, request: Request) -> dict:
     # Constant-time token validation
     token_header = request.headers.get("X-Bot-Token", "")
