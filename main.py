@@ -205,28 +205,32 @@ async def _enviar_respuesta(
     respuesta: str,
     mensaje_usuario: str,
     contact_name: str,
+    medios: list | None = None,
 ) -> None:
     if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN):
         print("[Send] CRM no configurado — respuesta no enviada", flush=True)
         return
     print(
         f"[Send] → CRM /bot-send  tel={telefono}  inst={instancia}  "
-        f"resp_len={len(respuesta)}  preview='{respuesta[:60].strip()}'",
+        f"resp_len={len(respuesta)}  medios={len(medios or [])}  preview='{respuesta[:60].strip()}'",
         flush=True,
     )
     try:
+        payload: dict = {
+            "telefono":     telefono,
+            "remote_jid":   remote_jid,
+            "instancia":    instancia,
+            "respuesta":    respuesta,
+            "user_message": mensaje_usuario,
+            "contact_name": contact_name or None,
+        }
+        if medios:
+            payload["medios"] = medios
         async with httpx.AsyncClient(timeout=CRM_TIMEOUT) as client:
             r = await client.post(
                 f"{CRM_URL}/api/v1/{CRM_TENANT}/bot-send",
                 headers={"X-API-Key": CRM_API_TOKEN},
-                json={
-                    "telefono":     telefono,
-                    "remote_jid":   remote_jid,
-                    "instancia":    instancia,
-                    "respuesta":    respuesta,
-                    "user_message": mensaje_usuario,
-                    "contact_name": contact_name or None,
-                },
+                json=payload,
             )
         print(
             f"[Send] ✅ CRM respondió HTTP {r.status_code} — "
@@ -346,7 +350,7 @@ async def _procesar_mensaje(datos: dict) -> None:
     # 4. Generate adaptive response
     productos_detectados = filtro.get("productos_detectados") or []
     print(f"[GPT] {telefono} generando respuesta…", flush=True)
-    respuesta = await _responder_module.generar_respuesta(
+    resultado = await _responder_module.generar_respuesta(
         mensaje=mensaje_efectivo,
         historial_crm=historial,
         telefono=telefono,
@@ -356,19 +360,32 @@ async def _procesar_mensaje(datos: dict) -> None:
         es_primer_mensaje=es_primer_mensaje,
     )
 
+    # Handle both old str return (safety) and new dict return
+    if isinstance(resultado, str):
+        respuesta = resultado
+        medios: list = []
+        pause = False
+        human_escalate = False
+    else:
+        respuesta      = resultado.get("respuesta", "")
+        medios         = resultado.get("medios", [])
+        pause          = resultado.get("pause", False)
+        human_escalate = resultado.get("human_escalate", False)
+
     if not respuesta:
         print(f"[GPT] {telefono} ❌ respuesta vacía — no se envía", flush=True)
         return
 
     print(
-        f"[GPT] {telefono} ✅ respuesta generada ({len(respuesta)} chars) — "
+        f"[GPT] {telefono} ✅ respuesta ({len(respuesta)} chars) pause={pause} "
+        f"human_escalate={human_escalate} medios={len(medios)} — "
         f"'{respuesta[:60].strip()}'…",
         flush=True,
     )
 
     # 5. Send response via CRM → Evolution API
     await _enviar_respuesta(
-        telefono, remote_jid, instancia, respuesta, mensaje_efectivo, contact_name,
+        telefono, remote_jid, instancia, respuesta, mensaje_efectivo, contact_name, medios or None,
     )
 
 

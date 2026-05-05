@@ -38,9 +38,11 @@ BOT_NOMBRE     = os.getenv("BOT_NOMBRE", "Valeria")
 # Injected by main.py on startup via _cargar_reglas_crm()
 _REGLAS_ACTIVAS: dict = {}
 
-# Shared product catalog (same for all contacts)
-_PRODUCT_CACHE: dict = {}      # {"data": str, "expires_at": float}
-_PRODUCT_CACHE_LIST: list = [] # raw product dicts for fuzzy matching
+# Shared catalog caches (same for all contacts)
+_PRODUCT_CACHE: dict = {}        # {"data": str, "expires_at": float}  — formatted text
+_PRODUCT_CACHE_LIST: list = []   # raw producto dicts for fuzzy name matching
+_PAQUETES_CACHE_LIST: list = []  # raw paquete dicts (for package→product cross-reference)
+_TESTIMONIOS_CACHE_LIST: list = [] # raw testimonio dicts (for condition-based discovery)
 
 # Per-instancia IA analysis instructions
 _ANALISIS_CACHE: dict = {}  # {instancia_key: {"data": str, "expires_at": float}}
@@ -137,34 +139,39 @@ def _formatear_lista_productos(items: list, etiqueta: str) -> str:
     return "\n".join(lineas)
 
 
+def _extract_list(res: list | dict | None) -> list:
+    if res is None:
+        return []
+    if isinstance(res, list):
+        return res
+    return res.get("data") or []
+
+
 async def _obtener_productos() -> str:
-    """Returns formatted product + package catalog. Cached for _PRODUCT_TTL seconds."""
-    global _PRODUCT_CACHE_LIST
+    """Returns formatted product + package + testimonio catalog. Cached for _PRODUCT_TTL seconds."""
+    global _PRODUCT_CACHE_LIST, _PAQUETES_CACHE_LIST, _TESTIMONIOS_CACHE_LIST
     now = time.monotonic()
     if _PRODUCT_CACHE.get("expires_at", 0.0) > now:
         return _PRODUCT_CACHE["data"]
 
-    res_productos = await _crm_get("productos", {"per_page": 50})
-    res_paquetes  = await _crm_get("paquetes",  {"per_page": 50})
+    res_productos, res_paquetes, res_testimonios = await asyncio.gather(
+        _crm_get("productos",   {"per_page": 100}),
+        _crm_get("paquetes",    {"per_page": 50}),
+        _crm_get("testimonios", {"per_page": 50}),
+    )
 
-    def _extract_list(res: list | dict | None) -> list:
-        if res is None:
-            return []
-        if isinstance(res, list):
-            return res
-        return res.get("data") or []
+    productos   = _extract_list(res_productos)
+    paquetes    = _extract_list(res_paquetes)
+    testimonios = _extract_list(res_testimonios)
 
-    productos = _extract_list(res_productos)
-    paquetes  = _extract_list(res_paquetes)
-
-    # Keep raw list for fuzzy matching
-    _PRODUCT_CACHE_LIST = productos + paquetes
+    # Keep raw lists separately for cross-reference
+    _PRODUCT_CACHE_LIST    = productos
+    _PAQUETES_CACHE_LIST   = paquetes
+    _TESTIMONIOS_CACHE_LIST = testimonios
 
     partes: list[str] = []
     if productos:
         partes.append(_formatear_lista_productos(productos, "CATÁLOGO DE PRODUCTOS 4LIFE"))
-    if paquetes:
-        partes.append(_formatear_lista_productos(paquetes, "PAQUETES Y OFERTAS DISPONIBLES"))
 
     resultado = "\n\n".join(partes)
     _PRODUCT_CACHE["data"]       = resultado
@@ -205,6 +212,186 @@ def _formatear_productos_detectados(nombres_buscados: list[str]) -> str:
             + "\n(Busca en el catálogo y proporciona la información más relevante)"
         )
     return _formatear_lista_productos(matches, "PRODUCTO(S) IDENTIFICADO(S) EN ESTE MENSAJE")
+
+
+def _obtener_imagen_producto(nombres_buscados: list[str]) -> str | None:
+    """Returns the first image URL found among products matching the given names."""
+    if not nombres_buscados:
+        return None
+    matches = _buscar_productos_fuzzy(nombres_buscados)
+    for prod in matches:
+        img = _pick_field(prod, ["imagen", "IMAGEN", "image_url", "IMAGE_URL", "foto", "FOTO", "img"])
+        if img and isinstance(img, str) and img.startswith("http"):
+            return img
+    return None
+
+
+def _obtener_video_testimonio(nombres_buscados: list[str] | None = None) -> str | None:
+    """Returns testimony video URL from matched product or from global config."""
+    # Try product-specific testimony first
+    if nombres_buscados:
+        matches = _buscar_productos_fuzzy(nombres_buscados)
+        for prod in matches:
+            vid = _pick_field(prod, ["video_testimonio", "VIDEO_TESTIMONIO", "testimonio_url", "video_url"])
+            if vid and isinstance(vid, str) and vid.startswith("http"):
+                return vid
+    # Fall back to global testimony video from rules/config
+    if _REGLAS_ACTIVAS:
+        vid = _REGLAS_ACTIVAS.get("video_testimonio") or _REGLAS_ACTIVAS.get("testimonio_url") or ""
+        if vid and isinstance(vid, str) and vid.startswith("http"):
+            return vid
+    return None
+
+
+# ── Package & Testimony cross-reference helpers ───────────────────────────────
+
+def _get_linked_product_ids(rec: dict) -> list[int]:
+    """Extracts the linked product ID array from a paquete or testimonio record.
+
+    Handles: [16, 13, 22], [{"id": 16}], "16,13,22", or nested inside 'datos'.
+    """
+    datos = rec.get("datos") if isinstance(rec.get("datos"), dict) else rec
+
+    raw = None
+    for source in (datos, rec) if datos is not rec else (rec,):
+        for key in ["productos", "PRODUCTOS", "productos_sugeridos", "PRODUCTOS SUGERIDOS",
+                    "product_ids", "items"]:
+            val = source.get(key)
+            if val is not None:
+                raw = val
+                break
+        if raw is not None:
+            break
+
+    if raw is None:
+        return []
+
+    if isinstance(raw, list):
+        ids: list[int] = []
+        for item in raw:
+            if isinstance(item, int):
+                ids.append(item)
+            elif isinstance(item, dict):
+                pk = item.get("id") or item.get("producto_id") or item.get("pivot", {}).get("catalog_record_id")
+                if pk:
+                    ids.append(int(pk))
+            elif isinstance(item, str) and item.strip().isdigit():
+                ids.append(int(item.strip()))
+        return ids
+    if isinstance(raw, str):
+        return [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+    return []
+
+
+def _productos_por_ids(ids: list[int]) -> list[dict]:
+    """Fetches product records from cache by their numeric IDs."""
+    if not ids or not _PRODUCT_CACHE_LIST:
+        return []
+    id_set = set(ids)
+    return [p for p in _PRODUCT_CACHE_LIST if p.get("id") in id_set]
+
+
+def _buscar_paquetes_para_productos(nombres: list[str]) -> list[dict]:
+    """Given product names detected in an image, finds paquetes that contain those products.
+
+    Returns paquetes where at least 2 of the detected product IDs appear.
+    """
+    if not nombres or not _PAQUETES_CACHE_LIST:
+        return []
+
+    product_matches = _buscar_productos_fuzzy(nombres)
+    if not product_matches:
+        return []
+
+    detected_ids = {p.get("id") for p in product_matches if p.get("id")}
+    if not detected_ids:
+        return []
+
+    resultado: list[dict] = []
+    for paquete in _PAQUETES_CACHE_LIST:
+        paq_ids = set(_get_linked_product_ids(paquete))
+        coincidencias = len(paq_ids & detected_ids)
+        if coincidencias >= 2:
+            resultado.append(paquete)
+
+    return resultado
+
+
+def _expandir_paquete_con_productos(paquete: dict) -> str:
+    """Formats a paquete with name, description and all its products expanded."""
+    nombre = _pick_field(paquete, ["NOMBRE PAQUETE", "NOMBRE", "nombre", "nombre_paquete", "name"]) or "Paquete"
+    desc   = _pick_field(paquete, ["DESCRIPCION", "DESCRIPCIÓN", "descripcion", "description"]) or ""
+
+    lineas = [f"📦 PAQUETE: {nombre}"]
+    if desc:
+        lineas.append(f"Descripción: {str(desc)[:200]}")
+
+    prod_ids = _get_linked_product_ids(paquete)
+    prods    = _productos_por_ids(prod_ids)
+    if prods:
+        lineas.append("Productos incluidos en el paquete:")
+        for p in prods:
+            pnom  = _pick_field(p, ["NOMBRE", "nombre", "name"]) or "Producto"
+            ppre  = _pick_field(p, ["PRECIO", "precio", "price"])
+            pdesc = _pick_field(p, ["DESCRIPCION", "descripcion", "DESCRIPCION_CORTA",
+                                    "descripcion_corta", "description"])
+            linea = f"  • {pnom}"
+            if ppre:
+                linea += f" (${ppre})"
+            if pdesc:
+                linea += f" — {str(pdesc)[:120]}"
+            lineas.append(linea)
+
+    return "\n".join(lineas)
+
+
+def _formatear_paquetes_contexto() -> str:
+    """Formats all packages catalog for GPT context."""
+    if not _PAQUETES_CACHE_LIST:
+        return ""
+    partes = ["CATÁLOGO DE PAQUETES 4LIFE:"]
+    for pq in _PAQUETES_CACHE_LIST:
+        partes.append(_expandir_paquete_con_productos(pq))
+    return "\n\n".join(partes)
+
+
+def _formatear_testimonios_contexto() -> str:
+    """Formats the testimonios catalog for GPT context (condition → suggested products)."""
+    if not _TESTIMONIOS_CACHE_LIST:
+        return ""
+
+    lineas = ["CATÁLOGO DE TESTIMONIOS (condición → productos sugeridos):"]
+    for t in _TESTIMONIOS_CACHE_LIST:
+        condicion = _pick_field(t, ["CONDICION CRONICA", "CONDICION CRÓNICA", "condicion",
+                                     "condicion_cronica", "CONDICION", "condition"]) or ""
+        desc      = _pick_field(t, ["DESCRIPCION", "DESCRIPCIÓN", "descripcion", "description"]) or ""
+
+        if not condicion:
+            continue
+
+        linea = f"• Condición: {condicion}"
+        if desc:
+            linea += f"\n  Info: {str(desc)[:200]}"
+
+        prod_ids = _get_linked_product_ids(t)
+        prods    = _productos_por_ids(prod_ids)
+        if prods:
+            nombres_prods = [_pick_field(p, ["NOMBRE", "nombre"]) or "?" for p in prods]
+            linea += f"\n  Productos sugeridos: {', '.join(nombres_prods)}"
+
+            # Also check if any package groups these products
+            coincidentes = [pq for pq in _PAQUETES_CACHE_LIST
+                            if len(set(_get_linked_product_ids(pq)) & set(prod_ids)) >= 2]
+            if coincidentes:
+                nombres_paq = [
+                    _pick_field(pq, ["NOMBRE PAQUETE", "NOMBRE", "nombre"]) or "Paquete"
+                    for pq in coincidentes
+                ]
+                linea += f"\n  Paquete recomendado: {', '.join(nombres_paq)}"
+
+        lineas.append(linea)
+
+    return "\n".join(lineas)
 
 
 # ── Training RAG ──────────────────────────────────────────────────────────────
@@ -460,69 +647,136 @@ def _construir_system_prompt(
     es_primer_mensaje: bool = False,
     productos_detectados: list[str] | None = None,
     genero_bot: str = "neutro",
+    tipo_flujo: str = "texto",          # "imagen_multiprod" | "imagen_monoprod" | "texto"
+    contexto_paquetes: str = "",        # formatted paquetes block (for imagen_multiprod)
+    contexto_testimonios: str = "",     # formatted testimonios block (for texto flow)
+    paquetes_detectados: list[dict] | None = None,  # matching packages for imagen_multiprod
 ) -> str:
     hora       = _saludo_hora()
     nombre_bot = bot_nombre or "Asesora"
-    productos_detectados = productos_detectados or []
+    productos_detectados  = productos_detectados  or []
+    paquetes_detectados   = paquetes_detectados   or []
 
     # Título según género
     if genero_bot == "femenino":
-        titulo = "asesora"
+        titulo   = "asesora"
+        calida   = "cálida"
+        empatica = "empática"
     elif genero_bot == "masculino":
-        titulo = "asesor"
+        titulo   = "asesor"
+        calida   = "cálido"
+        empatica = "empático"
     else:
-        titulo = "asesor/a"
+        titulo   = "asesor/a"
+        calida   = "cálido/a"
+        empatica = "empático/a"
 
-    # NOTE: user input is NEVER included here — it goes as role:user in the messages array.
     partes: list[str] = [
-        f"""Eres {nombre_bot}, {titulo} de bienestar y productos 4Life. Eres cálid{'a' if genero_bot == 'femenino' else 'o' if genero_bot == 'masculino' else 'o/a'}, profesional y empátic{'a' if genero_bot == 'femenino' else 'o' if genero_bot == 'masculino' else 'o/a'}.
-Tu misión es brindar información sobre los productos y ofertas exclusivas de 4Life.
+        f"""Eres {nombre_bot}, {titulo} de bienestar con productos 4Life. Eres {calida}, genuina y {empatica}.
 
-FORMA DE CONVERSAR:
-• Adáptate al contexto: no sigas pasos fijos ni guiones, responde lo que realmente se pregunta.
-• Sé concis{'a' if genero_bot == 'femenino' else 'o'} y natural: no abrumes con información que no fue pedida.
-• No repitas el mismo saludo ni la misma presentación en cada mensaje.
-• Nunca inventes precios, beneficios o propiedades que no estén en el catálogo.
-• Si no tienes información sobre algo, dilo honestamente en lugar de inventar.
+Tu única función es orientar a las personas sobre los productos 4Life con información honesta del catálogo.
+No hablas de ningún otro tema — si el contexto de la conversación te lleva a algo fuera de 4Life, redirige con naturalidad.
+
+CÓMO CONVERSAS:
+• Te adaptas al ritmo y tono de cada persona. No sigues un guión fijo.
+• Eres directa sin ser fría, y empática sin exagerar. Cero muletillas ("¡Claro!", "¡Por supuesto!", "¡Perfecto!", etc.).
+• No abrumas: das la información que es útil en ese momento, no toda de golpe.
+• Haces como máximo una pregunta por mensaje y esperas la respuesta.
+• No repites lo que ya dijiste en mensajes anteriores a menos que el cliente lo pida.
+• Nunca inventas precios, beneficios ni productos. Si no está en el catálogo, no existe.
 • Hora actual en México: {hora}."""
     ]
 
-    # ── Instrucciones para PRIMER MENSAJE ────────────────────────────────────
+    # ── Primer contacto ───────────────────────────────────────────────────────
     if es_primer_mensaje:
-        saludo_instruc = [
-            f"PRIMER MENSAJE — Es el primer contacto con este cliente.",
-            f"• Salúdalo con '{hora}' de forma natural al inicio de tu respuesta.",
-            f"• Preséntate: 'Soy {nombre_bot}, asesora 4Life'.",
-        ]
-        if not contact_name:
-            saludo_instruc.append("• Pide su nombre de forma amigable.")
-        else:
-            saludo_instruc.append(f"• El cliente se llama {contact_name}, úsalo para personalizar.")
-        if productos_detectados:
-            nombres_str = ", ".join(productos_detectados)
-            saludo_instruc.append(
-                f"• El cliente preguntó por: {nombres_str}. Menciónalo en tu saludo y proporciona información del catálogo sobre ese producto."
-            )
-        partes.append("\n".join(saludo_instruc))
-
-    # ── Contexto de producto detectado (cualquier mensaje) ───────────────────
-    if productos_detectados:
-        bloque_prod = _formatear_productos_detectados(productos_detectados)
-        partes.append(bloque_prod)
-
-    if instrucciones_analisis:
-        partes.append(instrucciones_analisis)
-
-    if temas_repetidos:
-        lista = ", ".join(temas_repetidos)
         partes.append(
-            f"ANTI-CICLO — Estos temas ya fueron cubiertos en esta conversación. "
-            f"NO los repitas a menos que el cliente lo pida explícitamente:\n{lista}"
+            f"Es el primer mensaje de este cliente.\n"
+            f"Salúdalo con '{hora}' de forma natural, preséntate como {nombre_bot} ({titulo} 4Life) "
+            f"y pide su nombre — nunca asumas que ya lo sabes."
         )
 
+    # ── Contexto según tipo de interacción ───────────────────────────────────
+    if tipo_flujo == "imagen_multiprod":
+        nombres_str = ", ".join(productos_detectados)
+        if paquetes_detectados:
+            nombres_paq = [
+                _pick_field(pq, ["NOMBRE PAQUETE", "NOMBRE", "nombre"]) or "Paquete"
+                for pq in paquetes_detectados
+            ]
+            partes.append(
+                f"El cliente envió una imagen con varios productos de 4Life: {nombres_str}.\n"
+                f"Esos productos forman parte del paquete: {', '.join(nombres_paq)}.\n"
+                f"Presenta el paquete de forma natural — explica qué es, por qué esa combinación tiene sentido "
+                f"y qué aporta cada producto. Cuando termines, si crees que un testimonio le ayudaría, pregúntale. "
+                f"Añade [[PAUSE]] cuando quieras que responda antes de continuar.\n\n"
+                f"Información del paquete:\n{contexto_paquetes}"
+            )
+        else:
+            partes.append(
+                f"El cliente envió una imagen con varios productos de 4Life: {nombres_str}.\n"
+                f"No hay un paquete exacto para esa combinación. Presenta cada producto de forma natural "
+                f"con sus beneficios y precio. Cuando termines puedes preguntarle si quiere ver un testimonio. "
+                f"Añade [[PAUSE]] cuando esperes que responda."
+            )
+
+    elif tipo_flujo == "imagen_monoprod":
+        nombres_str = ", ".join(productos_detectados)
+        partes.append(
+            f"El cliente envió una imagen del producto: {nombres_str}.\n"
+            f"Habla de él de forma natural usando la info del catálogo. "
+            f"Cuando termines puedes ofrecerle ver un testimonio. "
+            f"Añade [[PAUSE]] cuando esperes que responda."
+        )
+
+    else:  # texto / lead Facebook
+        partes.append(
+            f"El cliente llegó por texto o desde una pauta — no envió imagen.\n"
+            f"Tu objetivo es entender qué necesita y orientarlo hacia el producto o paquete adecuado del catálogo.\n"
+            f"Para llegar ahí de forma natural: si aún no sabes su nombre, pídelo. "
+            f"Entiende si ya conoce 4Life o es nuevo. Si es nuevo, una presentación muy breve basta. "
+            f"Con pocas preguntas (no más de dos) descubre qué condición o molestia tiene. "
+            f"Luego busca en los TESTIMONIOS si hay alguna condición que coincida — si la hay, "
+            f"usa los productos sugeridos de ese testimonio para recomendar; revisa si forman un PAQUETE. "
+            f"Si no hay testimonio relevante, busca el paquete más adecuado; si tampoco aplica ninguno, "
+            f"ve directo a los PRODUCTOS y justifica con su descripción por qué podrían ayudarle. "
+            f"Solo recomienda lo que existe en el catálogo y tiene sentido para esa condición. "
+            f"Si nada aplica, añade [[HUMAN_ESCALATE]] — no inventes.\n"
+            f"Añade [[PAUSE]] cada vez que esperes que el cliente responda antes de continuar."
+        )
+
+    # ── Datos del catálogo ────────────────────────────────────────────────────
     if contexto_productos:
         partes.append(contexto_productos)
 
+    if tipo_flujo == "texto" and contexto_testimonios:
+        partes.append(contexto_testimonios)
+
+    if tipo_flujo in ("texto", "imagen_multiprod") and contexto_paquetes and not paquetes_detectados:
+        partes.append(contexto_paquetes)
+
+    if productos_detectados and tipo_flujo in ("imagen_monoprod", "imagen_multiprod"):
+        bloque_prod = _formatear_productos_detectados(productos_detectados)
+        if bloque_prod:
+            partes.append(bloque_prod)
+
+    # ── Marcadores ────────────────────────────────────────────────────────────
+    partes.append(
+        "MARCADORES — añade solo cuando corresponda, al final del mensaje:\n"
+        "• [[PAUSE]] — esperas que el cliente responda antes de continuar.\n"
+        "• [[SEND_TESTIMONY]] [[PAUSE]] — el cliente quiere ver el testimonio en video.\n"
+        "• [[HUMAN_ESCALATE]] — ningún producto del catálogo aplica a lo que el cliente necesita."
+    )
+
+    # ── Anti-ciclo ────────────────────────────────────────────────────────────
+    if temas_repetidos:
+        lista = ", ".join(temas_repetidos)
+        partes.append(f"Ya tocaste estos temas antes — no los repitas a menos que el cliente lo pida: {lista}")
+
+    # ── Instrucciones de análisis IA ──────────────────────────────────────────
+    if instrucciones_analisis:
+        partes.append(instrucciones_analisis)
+
+    # ── Ejemplos y reglas CRM ─────────────────────────────────────────────────
     if ejemplos_entrenamiento:
         partes.append(ejemplos_entrenamiento)
 
@@ -589,19 +843,19 @@ async def generar_respuesta(
     contact_name: str = "",
     productos_detectados: list[str] | None = None,
     es_primer_mensaje: bool = False,
-) -> str:
+) -> dict:
     """
     Generates a natural, adaptive response using GPT-4o-mini.
 
     Security: user input is passed as role:user, NEVER injected into the system prompt.
-    Returns the response text, or empty string on error.
+    Returns dict: {respuesta, medios, pause, send_testimony, human_escalate}
     """
     if not OPENAI_API_KEY:
         print("[Responder] OPENAI_API_KEY no configurada", flush=True)
-        return ""
+        return {"respuesta": "", "medios": [], "pause": False, "send_testimony": False, "human_escalate": False}
 
-    # Fetch all context sources concurrently
-    print(f"[Responder] {telefono} cargando contexto (productos + entrenamiento + análisis)…", flush=True)
+    # Fetch all context sources concurrently (also pre-loads paquetes/testimonios into cache)
+    print(f"[Responder] {telefono} cargando contexto (catálogo + entrenamiento + análisis)…", flush=True)
     contexto_productos, ejemplos, instrucciones = await asyncio.gather(
         _obtener_productos(),
         _buscar_entrenamiento(mensaje),
@@ -610,18 +864,43 @@ async def generar_respuesta(
 
     temas_repetidos = _detectar_temas_repetidos(historial_crm)
 
-    # Instance name takes priority so the bot presents with its WhatsApp line name
     bot_nombre = _nombre_desde_instancia(instancia) or BOT_NOMBRE or "Asesora"
     genero_bot = _detectar_genero_instancia(instancia)
 
     prods = productos_detectados or []
+
+    # ── Determinar tipo de flujo ──────────────────────────────────────────────
+    paquetes_detectados: list[dict] = []
+    contexto_paquetes   = ""
+    contexto_testimonios = ""
+
+    if len(prods) >= 2:
+        tipo_flujo = "imagen_multiprod"
+        paquetes_detectados = _buscar_paquetes_para_productos(prods)
+        if paquetes_detectados:
+            partes_paq = [_expandir_paquete_con_productos(pq) for pq in paquetes_detectados]
+            contexto_paquetes = "\n\n".join(partes_paq)
+            print(f"[Responder] {telefono} 📦 paquete(s) coincidente(s): "
+                  f"{[_pick_field(pq, ['NOMBRE PAQUETE','NOMBRE','nombre']) for pq in paquetes_detectados]}",
+                  flush=True)
+        else:
+            contexto_paquetes = _formatear_paquetes_contexto()
+            print(f"[Responder] {telefono} 📦 múltiples productos, sin paquete exacto", flush=True)
+    elif len(prods) == 1:
+        tipo_flujo = "imagen_monoprod"
+        print(f"[Responder] {telefono} 🔍 flujo monoproducto: {prods[0]}", flush=True)
+    else:
+        tipo_flujo = "texto"
+        contexto_paquetes    = _formatear_paquetes_contexto()
+        contexto_testimonios = _formatear_testimonios_contexto()
+        print(f"[Responder] {telefono} 💬 flujo texto/Facebook lead"
+              f"  testimonios={'sí' if contexto_testimonios else 'no'}"
+              f"  paquetes={'sí' if contexto_paquetes else 'no'}",
+              flush=True)
+
     print(
-        f"[Responder] {telefono}  bot={bot_nombre}({genero_bot})  "
-        f"productos={'sí' if contexto_productos else 'no'}  "
-        f"ejemplos={'sí' if ejemplos else 'no'}  "
-        f"análisis={'sí' if instrucciones else 'no'}  "
-        f"primer_msg={es_primer_mensaje}  "
-        f"prods_detectados={prods or 'ninguno'}  "
+        f"[Responder] {telefono}  bot={bot_nombre}({genero_bot})  flujo={tipo_flujo}  "
+        f"primer_msg={es_primer_mensaje}  prods={prods or 'ninguno'}  "
         f"temas_repetidos={temas_repetidos or 'ninguno'}",
         flush=True,
     )
@@ -636,6 +915,10 @@ async def generar_respuesta(
         es_primer_mensaje=es_primer_mensaje,
         productos_detectados=prods,
         genero_bot=genero_bot,
+        tipo_flujo=tipo_flujo,
+        contexto_paquetes=contexto_paquetes,
+        contexto_testimonios=contexto_testimonios,
+        paquetes_detectados=paquetes_detectados,
     )
 
     # Build messages: history + current user message
@@ -660,12 +943,12 @@ async def generar_respuesta(
                 json={
                     "model":       "gpt-4o-mini",
                     "temperature": 0.7,
-                    "max_tokens":  500,
+                    "max_tokens":  600,
                     "messages":    [{"role": "system", "content": system_prompt}] + mensajes,
                 },
             )
             resp.raise_for_status()
-            respuesta = resp.json()["choices"][0]["message"]["content"].strip()
+            respuesta_raw = resp.json()["choices"][0]["message"]["content"].strip()
             tokens = resp.json().get("usage", {})
             print(
                 f"[Responder] {telefono} ✅ GPT respondió  "
@@ -674,10 +957,52 @@ async def generar_respuesta(
             )
     except Exception as e:
         print(f"[Responder] {telefono} ❌ error OpenAI: {e}", flush=True)
-        return ""
+        return {"respuesta": "", "medios": [], "pause": False, "send_testimony": False, "human_escalate": False}
+
+    # ── Parsear marcadores especiales ─────────────────────────────────────────
+    import re as _re
+    pause           = "[[PAUSE]]"           in respuesta_raw
+    send_testimony  = "[[SEND_TESTIMONY]]"  in respuesta_raw
+    human_escalate  = "[[HUMAN_ESCALATE]]"  in respuesta_raw
+
+    # Quitar los marcadores del texto que se enviará al cliente
+    respuesta = _re.sub(
+        r"\[\[PAUSE\]\]|\[\[SEND_TESTIMONY\]\]|\[\[HUMAN_ESCALATE\]\]",
+        "",
+        respuesta_raw,
+    ).strip()
+
+    # ── Construir lista de medios ─────────────────────────────────────────────
+    medios: list[dict] = []
+
+    # Imagen del producto (imagen_monoprod o imagen_multiprod)
+    if prods and tipo_flujo in ("imagen_monoprod", "imagen_multiprod"):
+        img_url = _obtener_imagen_producto(prods)
+        if img_url:
+            nombre_prod = prods[0] if prods else "Producto"
+            medios.append({"tipo": "imagen", "url": img_url, "caption": nombre_prod})
+            print(f"[Responder] {telefono} 📷 adjuntando imagen de producto: {img_url[:80]}", flush=True)
+
+    # Video de testimonio si GPT lo indica
+    if send_testimony:
+        vid_url = _obtener_video_testimonio(prods or None)
+        if vid_url:
+            medios.append({"tipo": "video", "url": vid_url, "caption": "Testimonio 🌟"})
+            print(f"[Responder] {telefono} 🎥 adjuntando video testimonio: {vid_url[:80]}", flush=True)
+        else:
+            print(f"[Responder] {telefono} ⚠️ [[SEND_TESTIMONY]] pero no hay video configurado", flush=True)
 
     # Save Q&A pair for future human review and training (non-blocking)
     asyncio.create_task(_guardar_entrenamiento_bg(mensaje, respuesta, telefono, instancia))
     print(f"[Entrena·BG] {telefono} par guardado en background", flush=True)
 
-    return respuesta
+    if human_escalate:
+        print(f"[Responder] {telefono} 🚨 [[HUMAN_ESCALATE]] — sin producto adecuado, escalando a humano", flush=True)
+
+    return {
+        "respuesta":       respuesta,
+        "medios":          medios,
+        "pause":           pause,
+        "send_testimony":  send_testimony,
+        "human_escalate":  human_escalate,
+    }
