@@ -51,23 +51,41 @@ _AUDIO_EXT_MAP: dict[str, str] = {
 # Helpers compartidos
 # ─────────────────────────────────────────────────────────────────────────────
 
+_VALID_IMAGE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
+# 15 MB en base64 ≈ ~11 MB raw — OpenAI acepta hasta 20 MB pero es costoso
+_MAX_IMAGE_B64_CHARS = 15 * 1024 * 1024
+
+
+def _normalizar_mime_imagen(data_uri: str) -> str:
+    """Asegura que el data URI tenga un MIME válido para OpenAI Vision."""
+    try:
+        header, b64_data = data_uri.split(",", 1)
+        mime = header.split(";")[0].replace("data:", "").strip().lower()
+        if mime not in _VALID_IMAGE_MIMES:
+            print(f"[Filtro·imagen] ⚠️  MIME no estándar '{mime}' → normalizando a image/jpeg", flush=True)
+            return f"data:image/jpeg;base64,{b64_data}"
+    except Exception:
+        pass
+    return data_uri
+
+
 async def _descargar_imagen_base64(url: str) -> str | None:
     """Descarga una imagen y la retorna como data URI base64."""
     if not url:
         return None
     if url.startswith("data:"):
-        return url
+        return _normalizar_mime_imagen(url)
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
             resp.raise_for_status()
             ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-            if not ct.startswith("image/"):
+            if not ct.startswith("image/") or ct not in _VALID_IMAGE_MIMES:
                 ct = "image/jpeg"
             b64 = base64.b64encode(resp.content).decode("utf-8")
             return f"data:{ct};base64,{b64}"
     except Exception as e:
-        print(f"[Filtro·imagen] error descargando {url!r}: {e}")
+        print(f"[Filtro·imagen] error descargando {url!r}: {e}", flush=True)
         return None
 
 
@@ -300,7 +318,11 @@ async def analizar_imagen(url_imagen: str, caption: str = "") -> dict:
         print(f"[Filtro·imagen] ❌ no se pudo descargar la imagen — url={url_imagen[:80]!r}", flush=True)
         return {**_default_err, "descripcion": "No se pudo descargar la imagen — ignorada"}
 
-    print(f"[Filtro·imagen] ✅ imagen descargada ({len(data_uri)} chars) — analizando con GPT-4o…", flush=True)
+    if len(data_uri) > _MAX_IMAGE_B64_CHARS:
+        print(f"[Filtro·imagen] ⚠️  imagen muy grande ({len(data_uri)//1024} KB base64) — omitida", flush=True)
+        return {**_default_err, "descripcion": "Imagen demasiado grande para analizar"}
+
+    print(f"[Filtro·imagen] ✅ imagen lista ({len(data_uri)//1024} KB) — analizando con GPT-4o…", flush=True)
 
     user_content: list = [
         {"type": "image_url", "image_url": {"url": data_uri, "detail": "low"}},
@@ -330,6 +352,10 @@ async def analizar_imagen(url_imagen: str, caption: str = "") -> dict:
             )
             resp.raise_for_status()
             raw = resp.json()["choices"][0]["message"]["content"].strip()
+    except httpx.HTTPStatusError as e:
+        cuerpo = e.response.text[:400]
+        print(f"[Filtro·imagen] ❌ error GPT-4o HTTP {e.response.status_code}: {cuerpo}", flush=True)
+        return {**_default_err, "descripcion": f"Error analizando imagen: HTTP {e.response.status_code}"}
     except Exception as e:
         print(f"[Filtro·imagen] ❌ error GPT-4o: {e}", flush=True)
         return {**_default_err, "descripcion": f"Error analizando imagen: {e}"}
