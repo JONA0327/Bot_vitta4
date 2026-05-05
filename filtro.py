@@ -88,6 +88,39 @@ def _normalizar_mime_imagen(data_uri: str) -> str:
     return data_uri
 
 
+async def _descargar_desde_evolution(evo_url: str, evo_key: str, instancia: str,
+                                     msg_key: dict, msg_message: dict) -> str | None:
+    """Llama a Evolution API getBase64FromMediaMessage y retorna data URI."""
+    endpoint = f"{evo_url.rstrip('/')}/chat/getBase64FromMediaMessage/{instancia}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                endpoint,
+                headers={"apikey": evo_key, "Content-Type": "application/json"},
+                json={"message": {"key": msg_key, "message": msg_message}},
+            )
+            resp.raise_for_status()
+            body = resp.json()
+        b64 = body.get("base64")
+        if not b64:
+            print(f"[Filtro·imagen] Evolution no devolvió base64 — body={str(body)[:200]}", flush=True)
+            return None
+        raw = base64.b64decode(b64)
+        mime_real = _detectar_mime_por_magic(raw)
+        if not mime_real:
+            print(
+                f"[Filtro·imagen] ⚠️  Evolution base64 no es imagen — "
+                f"primeros bytes={raw[:16].hex()!r}",
+                flush=True,
+            )
+            return None
+        print(f"[Filtro·imagen] ✅ imagen desde Evolution ({len(raw)//1024} KB) mime={mime_real}", flush=True)
+        return f"data:{mime_real};base64,{b64}"
+    except Exception as e:
+        print(f"[Filtro·imagen] ❌ Evolution getBase64 falló: {e}", flush=True)
+        return None
+
+
 async def _descargar_imagen_base64(url: str) -> str | None:
     """Descarga una imagen y la retorna como data URI base64.
     Verifica por magic bytes que el contenido sea realmente una imagen.
@@ -325,7 +358,15 @@ Responde ÚNICAMENTE con este JSON (sin texto adicional):
 }"""
 
 
-async def analizar_imagen(url_imagen: str, caption: str = "") -> dict:
+async def analizar_imagen(
+    url_imagen: str,
+    caption: str = "",
+    evo_url: str = "",
+    evo_key: str = "",
+    evo_instancia: str = "",
+    msg_key: dict | None = None,
+    msg_message: dict | None = None,
+) -> dict:
     """Analiza una imagen buscando productos 4Life o contenido inapropiado."""
     _default_err = {
         "tiene_productos_4life": False,
@@ -342,8 +383,14 @@ async def analizar_imagen(url_imagen: str, caption: str = "") -> dict:
     if not OPENAI_API_KEY:
         return {**_default_err, "descripcion": "Sin API key — imagen no analizada"}
 
-    # Descargar imagen — si falla no intentamos la URL cruda (WhatsApp requiere auth)
+    # 1. Intentar descargar la imagen directamente (funciona si ya es data URI)
     data_uri = await _descargar_imagen_base64(url_imagen)
+
+    # 2. Si falló y tenemos credenciales de Evolution, intentar via Evolution API
+    if not data_uri and evo_url and evo_key and evo_instancia and msg_key and msg_message:
+        print(f"[Filtro·imagen] URL directa falló — intentando via Evolution API…", flush=True)
+        data_uri = await _descargar_desde_evolution(evo_url, evo_key, evo_instancia, msg_key, msg_message)
+
     if not data_uri:
         print(f"[Filtro·imagen] ❌ no se pudo descargar la imagen — url={url_imagen[:80]!r}", flush=True)
         return {**_default_err, "descripcion": "No se pudo descargar la imagen — ignorada"}
@@ -524,6 +571,11 @@ async def clasificar_mensaje(
     titulo_fb: str = "",
     descripcion_fb: str = "",
     thumbnail_url: str = "",
+    evo_url: str = "",
+    evo_key: str = "",
+    evo_instancia: str = "",
+    msg_key: dict | None = None,
+    msg_message: dict | None = None,
 ) -> dict:
     """
     Dispatcher principal. Detecta el tipo de contenido y clasifica.
@@ -577,7 +629,15 @@ async def clasificar_mensaje(
     if es_imagen:
         url_img  = url_media or thumbnail_url or ""
         print(f"[Filtro] 🖼  analizando imagen — url={'data:...' if url_img.startswith('data:') else url_img[:80]!r}", flush=True)
-        resultado = await analizar_imagen(url_img, caption=caption or mensaje)
+        resultado = await analizar_imagen(
+            url_img,
+            caption=caption or mensaje,
+            evo_url=evo_url,
+            evo_key=evo_key,
+            evo_instancia=evo_instancia,
+            msg_key=msg_key,
+            msg_message=msg_message,
+        )
 
         # Si la imagen no pudo descargarse/analizarse, caer al texto/caption
         if resultado["descripcion"] in (

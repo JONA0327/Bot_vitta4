@@ -167,6 +167,11 @@ class MensajePayload(BaseModel):
     descripcion_fb: str = ""
     thumbnail_url:  str = ""
     contact_name:   str = ""
+    # Evolution API credentials — enviados por CRM cuando descargarMedia falla
+    evo_url:        str = ""
+    evo_key:        str = ""
+    msg_key:        dict = {}
+    msg_message:    dict = {}
 
     @field_validator("telefono", "instancia")
     @classmethod
@@ -273,6 +278,10 @@ async def _procesar_mensaje(datos: dict) -> None:
     desc_fb      = datos.get("descripcion_fb", "")
     thumb_url    = datos.get("thumbnail_url", "")
     contact_name = datos.get("contact_name", "")
+    evo_url      = datos.get("evo_url", "")
+    evo_key      = datos.get("evo_key", "")
+    msg_key      = datos.get("msg_key") or {}
+    msg_message  = datos.get("msg_message") or {}
 
     # 1. Filter message
     filtro = await clasificar_mensaje(
@@ -283,6 +292,11 @@ async def _procesar_mensaje(datos: dict) -> None:
         titulo_fb=titulo_fb,
         descripcion_fb=desc_fb,
         thumbnail_url=thumb_url,
+        evo_url=evo_url,
+        evo_key=evo_key,
+        evo_instancia=instancia,
+        msg_key=msg_key if msg_key else None,
+        msg_message=msg_message if msg_message else None,
     )
 
     clasificacion = filtro.get("clasificacion", "producto")
@@ -399,6 +413,11 @@ async def recibir_mensaje(payload: MensajePayload, request: Request) -> dict:
             _pending_data[clave]["url_media"]      = payload.url_media
             _pending_data[clave]["tipo_contenido"] = payload.tipo_contenido
             _pending_data[clave]["caption"]        = payload.caption
+            if payload.evo_url:
+                _pending_data[clave]["evo_url"]     = payload.evo_url
+                _pending_data[clave]["evo_key"]     = payload.evo_key
+                _pending_data[clave]["msg_key"]     = payload.msg_key
+                _pending_data[clave]["msg_message"] = payload.msg_message
     else:
         _pending_data[clave] = {
             "telefono":       payload.telefono,
@@ -412,6 +431,10 @@ async def recibir_mensaje(payload: MensajePayload, request: Request) -> dict:
             "descripcion_fb": payload.descripcion_fb,
             "thumbnail_url":  payload.thumbnail_url,
             "contact_name":   payload.contact_name,
+            "evo_url":        payload.evo_url,
+            "evo_key":        payload.evo_key,
+            "msg_key":        payload.msg_key,
+            "msg_message":    payload.msg_message,
         }
 
     _pending_tasks[clave] = asyncio.create_task(_procesar_con_delay(clave))
