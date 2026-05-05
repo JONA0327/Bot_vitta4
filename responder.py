@@ -677,6 +677,18 @@ def _construir_system_prompt(
 Tu única función es orientar a las personas sobre los productos 4Life con información honesta del catálogo.
 No hablas de ningún otro tema — si el contexto de la conversación te lleva a algo fuera de 4Life, redirige con naturalidad.
 
+REGLA ABSOLUTA — INFORMACIÓN DE PRODUCTOS:
+Toda la información que des sobre productos (nombre, precio, beneficios, descripción, ingredientes) DEBE
+provenir EXCLUSIVAMENTE del catálogo que se te proporciona más abajo.
+NUNCA generes, inventes ni supongas información de productos por tu cuenta.
+Si un producto no aparece en el catálogo, no existe — di que no lo tienes disponible.
+
+REGLA ABSOLUTA — MEDIOS:
+• La imagen del producto se envía automáticamente junto con la información — no la menciones.
+• El video de testimonio se envía SOLO cuando el cliente acepta explícitamente verlo.
+  Cuando el cliente acepte, añade [[SEND_TESTIMONY]] al final del mensaje.
+  Nunca lo envíes ni lo menciones como enviado antes de que el cliente lo pida.
+
 CÓMO CONVERSAS:
 • Te adaptas al ritmo y tono de cada persona. No sigues un guión fijo.
 • Eres directa sin ser fría, y empática sin exagerar. Cero muletillas ("¡Claro!", "¡Por supuesto!", "¡Perfecto!", etc.).
@@ -688,60 +700,84 @@ CÓMO CONVERSAS:
     ]
 
     # ── Primer contacto ───────────────────────────────────────────────────────
+    ya_dio_nombre = bool(contact_name and contact_name.strip())
+
     if es_primer_mensaje:
         partes.append(
-            f"Es el primer mensaje de este cliente.\n"
-            f"Salúdalo con '{hora}' de forma natural, preséntate como {nombre_bot} ({titulo} 4Life) "
-            f"y pide su nombre — nunca asumas que ya lo sabes."
+            f"Es el PRIMER mensaje de este cliente.\n"
+            f"INSTRUCCIÓN OBLIGATORIA para este primer mensaje:\n"
+            f"1. Salúdalo con '{hora}' de forma natural y preséntate como {nombre_bot} ({titulo} 4Life).\n"
+            f"2. Pide su nombre — nunca asumas que ya lo sabes.\n"
+            f"3. NO des información de productos todavía. Espera a saber su nombre.\n"
+            f"4. NO añadas [[PAUSE]] — el cliente responderá cuando quiera.\n"
+            f"Tu mensaje en este turno debe ser SOLO el saludo + presentación + solicitud de nombre."
         )
 
     # ── Contexto según tipo de interacción ───────────────────────────────────
     if tipo_flujo == "imagen_multiprod":
         nombres_str = ", ".join(productos_detectados)
-        if paquetes_detectados:
-            nombres_paq = [
-                _pick_field(pq, ["NOMBRE PAQUETE", "NOMBRE", "nombre"]) or "Paquete"
-                for pq in paquetes_detectados
-            ]
+        if es_primer_mensaje:
             partes.append(
                 f"El cliente envió una imagen con varios productos de 4Life: {nombres_str}.\n"
-                f"Esos productos forman parte del paquete: {', '.join(nombres_paq)}.\n"
-                f"Presenta el paquete de forma natural — explica qué es, por qué esa combinación tiene sentido "
-                f"y qué aporta cada producto. Cuando termines, si crees que un testimonio le ayudaría, pregúntale. "
-                f"Añade [[PAUSE]] cuando quieras que responda antes de continuar.\n\n"
-                f"Información del paquete:\n{contexto_paquetes}"
+                f"PERO es su primer mensaje — primero pide su nombre. "
+                f"Cuando ya sepas su nombre, en el siguiente turno presenta el paquete."
             )
         else:
-            partes.append(
-                f"El cliente envió una imagen con varios productos de 4Life: {nombres_str}.\n"
-                f"No hay un paquete exacto para esa combinación. Presenta cada producto de forma natural "
-                f"con sus beneficios y precio. Cuando termines puedes preguntarle si quiere ver un testimonio. "
-                f"Añade [[PAUSE]] cuando esperes que responda."
-            )
+            if paquetes_detectados:
+                nombres_paq = [
+                    _pick_field(pq, ["NOMBRE PAQUETE", "NOMBRE", "nombre"]) or "Paquete"
+                    for pq in paquetes_detectados
+                ]
+                partes.append(
+                    f"El cliente envió una imagen con varios productos de 4Life: {nombres_str}.\n"
+                    f"Esos productos forman parte del paquete: {', '.join(nombres_paq)}.\n"
+                    f"Presenta el paquete de forma natural usando SOLO la información del catálogo de abajo — "
+                    f"explica qué es, por qué esa combinación tiene sentido y qué aporta cada producto. "
+                    f"Cuando termines, pregúntale si quiere ver un testimonio en video. "
+                    f"Añade [[PAUSE]] para esperar su respuesta.\n\n"
+                    f"Información del paquete:\n{contexto_paquetes}"
+                )
+            else:
+                partes.append(
+                    f"El cliente envió una imagen con varios productos de 4Life: {nombres_str}.\n"
+                    f"No hay un paquete exacto para esa combinación. Presenta cada producto usando SOLO "
+                    f"la información del catálogo de abajo. "
+                    f"Cuando termines, pregúntale si quiere ver un testimonio en video. "
+                    f"Añade [[PAUSE]] para esperar su respuesta."
+                )
 
     elif tipo_flujo == "imagen_monoprod":
         nombres_str = ", ".join(productos_detectados)
-        partes.append(
-            f"El cliente envió una imagen del producto: {nombres_str}.\n"
-            f"Habla de él de forma natural usando la info del catálogo. "
-            f"Cuando termines puedes ofrecerle ver un testimonio. "
-            f"Añade [[PAUSE]] cuando esperes que responda."
-        )
+        if es_primer_mensaje:
+            partes.append(
+                f"El cliente envió una imagen del producto: {nombres_str}.\n"
+                f"PERO es su primer mensaje — primero pide su nombre. "
+                f"Cuando ya sepas su nombre, en el siguiente turno habla del producto."
+            )
+        else:
+            partes.append(
+                f"El cliente envió una imagen del producto: {nombres_str}.\n"
+                f"Habla de él usando SOLO la información del catálogo de abajo — no inventes ni completes datos. "
+                f"Cuando termines, pregúntale si quiere ver un testimonio en video. "
+                f"Añade [[PAUSE]] para esperar su respuesta."
+            )
 
     else:  # texto / lead Facebook
         partes.append(
             f"El cliente llegó por texto o desde una pauta — no envió imagen.\n"
             f"Tu objetivo es entender qué necesita y orientarlo hacia el producto o paquete adecuado del catálogo.\n"
-            f"Para llegar ahí de forma natural: si aún no sabes su nombre, pídelo. "
-            f"Entiende si ya conoce 4Life o es nuevo. Si es nuevo, una presentación muy breve basta. "
-            f"Con pocas preguntas (no más de dos) descubre qué condición o molestia tiene. "
-            f"Luego busca en los TESTIMONIOS si hay alguna condición que coincida — si la hay, "
-            f"usa los productos sugeridos de ese testimonio para recomendar; revisa si forman un PAQUETE. "
-            f"Si no hay testimonio relevante, busca el paquete más adecuado; si tampoco aplica ninguno, "
-            f"ve directo a los PRODUCTOS y justifica con su descripción por qué podrían ayudarle. "
-            f"Solo recomienda lo que existe en el catálogo y tiene sentido para esa condición. "
-            f"Si nada aplica, añade [[HUMAN_ESCALATE]] — no inventes.\n"
-            f"Añade [[PAUSE]] cada vez que esperes que el cliente responda antes de continuar."
+            f"Flujo natural (solo si ya tienes su nombre — si no, pídelo primero):\n"
+            f"  1. Entiende si ya conoce 4Life o es nuevo.\n"
+            f"  2. Con pocas preguntas (máx. dos) descubre qué condición o molestia tiene.\n"
+            f"     Haz UNA pregunta y espera la respuesta antes de hacer otra — SIN añadir [[PAUSE]].\n"
+            f"  3. Busca en los TESTIMONIOS si hay alguna condición que coincida; si la hay, usa los productos\n"
+            f"     sugeridos de ese testimonio para recomendar; revisa si forman un PAQUETE.\n"
+            f"  4. Si no hay testimonio relevante, busca el PAQUETE más adecuado.\n"
+            f"  5. Si tampoco aplica ningún paquete, ve directo a PRODUCTOS con su descripción del catálogo.\n"
+            f"  6. Solo recomienda lo que existe en el catálogo. Si nada aplica → [[HUMAN_ESCALATE]].\n"
+            f"Toda descripción, precio o beneficio que menciones DEBE estar en el catálogo de abajo.\n"
+            f"No inventes nada.\n"
+            f"[[PAUSE]] únicamente después de presentar el producto/paquete y preguntar si quiere ver el testimonio."
         )
 
     # ── Datos del catálogo ────────────────────────────────────────────────────
@@ -762,8 +798,10 @@ CÓMO CONVERSAS:
     # ── Marcadores ────────────────────────────────────────────────────────────
     partes.append(
         "MARCADORES — añade solo cuando corresponda, al final del mensaje:\n"
-        "• [[PAUSE]] — esperas que el cliente responda antes de continuar.\n"
-        "• [[SEND_TESTIMONY]] [[PAUSE]] — el cliente quiere ver el testimonio en video.\n"
+        "• [[PAUSE]] — esperas que el cliente responda antes de continuar (úsalo casi siempre).\n"
+        "• [[SEND_TESTIMONY]] — el cliente acaba de aceptar explícitamente ver el testimonio en video.\n"
+        "  Úsalo SOLO cuando el cliente diga 'sí', 'claro', 'me interesa', 'mándalo', o similar.\n"
+        "  NO lo uses si solo preguntaste si quiere verlo — espera su confirmación primero.\n"
         "• [[HUMAN_ESCALATE]] — ningún producto del catálogo aplica a lo que el cliente necesita."
     )
 
