@@ -285,7 +285,7 @@ async def _procesar_mensaje(datos: dict) -> None:
         thumbnail_url=thumb_url,
     )
 
-    clasificacion = filtro["clasificacion"]
+    clasificacion = filtro.get("clasificacion", "producto")
     print(
         f"[Filtro] {telefono} tipo={tipo} → {clasificacion} "
         f"({filtro.get('descripcion', '')[:80]})",

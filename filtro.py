@@ -55,6 +55,25 @@ _VALID_IMAGE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp", "image/
 # 15 MB en base64 ≈ ~11 MB raw — OpenAI acepta hasta 20 MB pero es costoso
 _MAX_IMAGE_B64_CHARS = 15 * 1024 * 1024
 
+# Magic bytes para detectar formato real de imagen (independiente del Content-Type)
+_IMAGE_MAGIC: list[tuple[bytes, str]] = [
+    (b"\xff\xd8\xff",              "image/jpeg"),
+    (b"\x89PNG\r\n",              "image/png"),
+    (b"RIFF",                      "image/webp"),   # verificado más abajo
+    (b"GIF87a",                    "image/gif"),
+    (b"GIF89a",                    "image/gif"),
+]
+
+
+def _detectar_mime_por_magic(data: bytes) -> str | None:
+    """Detecta el MIME type real de una imagen por sus primeros bytes."""
+    for magic, mime in _IMAGE_MAGIC:
+        if data[:len(magic)] == magic:
+            if mime == "image/webp" and data[8:12] != b"WEBP":
+                continue  # es RIFF pero no WebP
+            return mime
+    return None
+
 
 def _normalizar_mime_imagen(data_uri: str) -> str:
     """Asegura que el data URI tenga un MIME válido para OpenAI Vision."""
@@ -70,7 +89,9 @@ def _normalizar_mime_imagen(data_uri: str) -> str:
 
 
 async def _descargar_imagen_base64(url: str) -> str | None:
-    """Descarga una imagen y la retorna como data URI base64."""
+    """Descarga una imagen y la retorna como data URI base64.
+    Verifica por magic bytes que el contenido sea realmente una imagen.
+    """
     if not url:
         return None
     if url.startswith("data:"):
@@ -79,11 +100,20 @@ async def _descargar_imagen_base64(url: str) -> str | None:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
             resp.raise_for_status()
-            ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-            if not ct.startswith("image/") or ct not in _VALID_IMAGE_MIMES:
-                ct = "image/jpeg"
-            b64 = base64.b64encode(resp.content).decode("utf-8")
-            return f"data:{ct};base64,{b64}"
+            data = resp.content
+
+        # Detectar por magic bytes (ignora Content-Type que puede ser incorrecto)
+        mime_real = _detectar_mime_por_magic(data)
+        if not mime_real:
+            print(
+                f"[Filtro·imagen] ⚠️  contenido descargado NO es una imagen reconocida — "
+                f"primeros bytes={data[:16].hex()!r}  url={url[:80]!r}",
+                flush=True,
+            )
+            return None
+
+        b64 = base64.b64encode(data).decode("utf-8")
+        return f"data:{mime_real};base64,{b64}"
     except Exception as e:
         print(f"[Filtro·imagen] error descargando {url!r}: {e}", flush=True)
         return None
@@ -548,6 +578,33 @@ async def clasificar_mensaje(
         url_img  = url_media or thumbnail_url or ""
         print(f"[Filtro] 🖼  analizando imagen — url={'data:...' if url_img.startswith('data:') else url_img[:80]!r}", flush=True)
         resultado = await analizar_imagen(url_img, caption=caption or mensaje)
+
+        # Si la imagen no pudo descargarse/analizarse, caer al texto/caption
+        if resultado["descripcion"] in (
+            "No se pudo descargar la imagen — ignorada",
+            "No se pudo analizar la imagen",
+            "URL de imagen vacía",
+            "Imagen demasiado grande para analizar",
+        ) or resultado["descripcion"].startswith("Error analizando imagen:"):
+            texto_fallback = caption or mensaje or ""
+            print(f"[Filtro] 🖼  imagen no analizable — fallback a texto: '{texto_fallback[:60]}'", flush=True)
+            if texto_fallback:
+                return await clasificar_mensaje(
+                    mensaje=texto_fallback,
+                    tipo_contenido="texto",
+                )
+            # Sin texto tampoco → clasificar como producto para no ignorar al usuario
+            return {
+                "clasificacion":        "producto",
+                "tipo_detectado":       "imagen",
+                "descripcion":          f"Imagen no analizable — {resultado['descripcion']}",
+                "productos_detectados": [],
+                "nombre_linea":         None,
+                "contexto_usuario":     "",
+                "confianza":            0.3,
+                "transcripcion":        None,
+                "detalles":             resultado,
+            }
 
         if resultado["es_inapropiado"]:
             clasificacion_final = "inapropiado"
