@@ -206,13 +206,14 @@ async def _enviar_respuesta(
     mensaje_usuario: str,
     contact_name: str,
     medios: list | None = None,
+    status: str = "",
 ) -> None:
     if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN):
         print("[Send] CRM no configurado — respuesta no enviada", flush=True)
         return
     print(
         f"[Send] → CRM /bot-send  tel={telefono}  inst={instancia}  "
-        f"resp_len={len(respuesta)}  medios={len(medios or [])}  preview='{respuesta[:60].strip()}'",
+        f"resp_len={len(respuesta)}  medios={len(medios or [])}  status={status or 'ok_ext_bot'}  preview='{respuesta[:60].strip()}'",
         flush=True,
     )
     try:
@@ -226,6 +227,8 @@ async def _enviar_respuesta(
         }
         if medios:
             payload["medios"] = medios
+        if status:
+            payload["status"] = status
         async with httpx.AsyncClient(timeout=CRM_TIMEOUT) as client:
             r = await client.post(
                 f"{CRM_URL}/api/v1/{CRM_TENANT}/bot-send",
@@ -266,6 +269,41 @@ async def _bloquear_contacto(
         print(f"[Bloqueo] {telefono} bloqueado — {motivo[:80]}", flush=True)
     except Exception as e:
         print(f"[Bloqueo] error: {e}", flush=True)
+
+
+async def _registrar_sin_respuesta(
+    telefono: str,
+    remote_jid: str,
+    instancia: str,
+    mensaje_usuario: str,
+    contact_name: str,
+    status: str,
+) -> None:
+    """Registers the incoming message in the CRM without sending any WhatsApp reply.
+
+    Used for 'irrelevante', 'inapropiado', and 'pausado' cases so the conversation
+    appears in the corresponding panel section.
+    """
+    if not (CRM_URL and CRM_TENANT and CRM_API_TOKEN):
+        return
+    try:
+        async with httpx.AsyncClient(timeout=CRM_TIMEOUT) as client:
+            await client.post(
+                f"{CRM_URL}/api/v1/{CRM_TENANT}/bot-send",
+                headers={"X-API-Key": CRM_API_TOKEN},
+                json={
+                    "telefono":      telefono,
+                    "remote_jid":    remote_jid,
+                    "instancia":     instancia,
+                    "user_message":  mensaje_usuario,
+                    "contact_name":  contact_name or None,
+                    "solo_registrar": True,
+                    "status":         status,
+                },
+            )
+        print(f"[Registro] {telefono} registrado en CRM como '{status}' (sin respuesta WhatsApp)", flush=True)
+    except Exception as e:
+        print(f"[Registro] error al registrar en CRM: {e}", flush=True)
 
 
 # ── Processing pipeline ───────────────────────────────────────────────────────
@@ -312,10 +350,22 @@ async def _procesar_mensaje(datos: dict) -> None:
 
     if clasificacion == "inapropiado":
         await _bloquear_contacto(telefono, remote_jid, instancia, filtro.get("descripcion", ""))
+        await _registrar_sin_respuesta(
+            telefono, remote_jid, instancia,
+            mensaje_usuario=mensaje or caption or "[mensaje inapropiado]",
+            contact_name=contact_name,
+            status="inapropiado",
+        )
         return
 
     if clasificacion == "irrelevante":
-        return  # Silent — do not respond
+        await _registrar_sin_respuesta(
+            telefono, remote_jid, instancia,
+            mensaje_usuario=mensaje or caption or "[mensaje irrelevante]",
+            contact_name=contact_name,
+            status="irrelevante",
+        )
+        return
 
     # 2. Get conversation history
     historial = await obtener_historial(telefono, limit=15)
@@ -384,8 +434,9 @@ async def _procesar_mensaje(datos: dict) -> None:
     )
 
     # 5. Send response via CRM → Evolution API
+    status_crm = "bot_pausado" if pause else ""
     await _enviar_respuesta(
-        telefono, remote_jid, instancia, respuesta, mensaje_efectivo, contact_name, medios or None,
+        telefono, remote_jid, instancia, respuesta, mensaje_efectivo, contact_name, medios or None, status_crm,
     )
 
 
