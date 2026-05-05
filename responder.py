@@ -39,7 +39,8 @@ BOT_NOMBRE     = os.getenv("BOT_NOMBRE", "Valeria")
 _REGLAS_ACTIVAS: dict = {}
 
 # Shared product catalog (same for all contacts)
-_PRODUCT_CACHE: dict = {}   # {"data": str, "expires_at": float}
+_PRODUCT_CACHE: dict = {}      # {"data": str, "expires_at": float}
+_PRODUCT_CACHE_LIST: list = [] # raw product dicts for fuzzy matching
 
 # Per-instancia IA analysis instructions
 _ANALISIS_CACHE: dict = {}  # {instancia_key: {"data": str, "expires_at": float}}
@@ -138,6 +139,7 @@ def _formatear_lista_productos(items: list, etiqueta: str) -> str:
 
 async def _obtener_productos() -> str:
     """Returns formatted product + package catalog. Cached for _PRODUCT_TTL seconds."""
+    global _PRODUCT_CACHE_LIST
     now = time.monotonic()
     if _PRODUCT_CACHE.get("expires_at", 0.0) > now:
         return _PRODUCT_CACHE["data"]
@@ -155,6 +157,9 @@ async def _obtener_productos() -> str:
     productos = _extract_list(res_productos)
     paquetes  = _extract_list(res_paquetes)
 
+    # Keep raw list for fuzzy matching
+    _PRODUCT_CACHE_LIST = productos + paquetes
+
     partes: list[str] = []
     if productos:
         partes.append(_formatear_lista_productos(productos, "CATÁLOGO DE PRODUCTOS 4LIFE"))
@@ -165,6 +170,41 @@ async def _obtener_productos() -> str:
     _PRODUCT_CACHE["data"]       = resultado
     _PRODUCT_CACHE["expires_at"] = now + _PRODUCT_TTL
     return resultado
+
+
+def _buscar_productos_fuzzy(nombres_buscados: list[str]) -> list[dict]:
+    """Finds products in the cached catalog that match any of the partial names given.
+
+    A match occurs when any search word (≥4 chars) appears inside the product name,
+    or the product name contains any search word. Case-insensitive.
+    """
+    if not nombres_buscados or not _PRODUCT_CACHE_LIST:
+        return []
+    encontrados: list[dict] = []
+    for prod in _PRODUCT_CACHE_LIST:
+        nombre_prod = (_pick_field(prod, ["NOMBRE", "nombre", "name", "NAME"]) or "").lower()
+        for buscado in nombres_buscados:
+            palabras = [w for w in buscado.lower().split() if len(w) >= 4]
+            if not palabras:
+                palabras = [buscado.lower().strip()]
+            if any(p in nombre_prod or nombre_prod in p for p in palabras):
+                if prod not in encontrados:
+                    encontrados.append(prod)
+                break
+    return encontrados
+
+
+def _formatear_productos_detectados(nombres_buscados: list[str]) -> str:
+    """Returns a formatted block with full catalog info for matched products."""
+    matches = _buscar_productos_fuzzy(nombres_buscados)
+    if not matches:
+        # No match found — just include the names as-is so GPT knows what was detected
+        return (
+            "PRODUCTO(S) IDENTIFICADO(S) EN ESTE MENSAJE: "
+            + ", ".join(nombres_buscados)
+            + "\n(Busca en el catálogo y proporciona la información más relevante)"
+        )
+    return _formatear_lista_productos(matches, "PRODUCTO(S) IDENTIFICADO(S) EN ESTE MENSAJE")
 
 
 # ── Training RAG ──────────────────────────────────────────────────────────────
@@ -382,30 +422,93 @@ def _nombre_desde_instancia(instancia: str) -> str:
     return instancia.replace("-", " ").replace("_", " ").title()
 
 
+# Nombres comunes masculinos/femeninos para inferir género del nombre de instancia
+_NOMBRES_FEMENINOS = {
+    "valeria", "maria", "ana", "lucia", "laura", "sofia", "carolina", "andrea",
+    "patricia", "alejandra", "gabriela", "isabel", "claudia", "monica", "veronica",
+    "fernanda", "daniela", "natalia", "diana", "paola", "rosa", "martha", "elena",
+    "irene", "beatriz", "cristina", "alicia", "sara", "silvia", "lorena",
+    "vitta", "vitalia", "esperanza", "gloria", "hilda", "norma", "yolanda",
+}
+_NOMBRES_MASCULINOS = {
+    "carlos", "jose", "juan", "miguel", "luis", "pedro", "antonio", "jorge",
+    "francisco", "manuel", "rafael", "david", "pablo", "roberto", "alejandro",
+    "gabriel", "daniel", "sergio", "ricardo", "fernando", "jonathan", "jonatan",
+    "andres", "mario", "javier", "hector", "omar", "ivan", "edgar", "oscar",
+    "enrique", "raul", "ruben", "felix", "victor", "gerardo", "alberto", "rodrigo",
+}
+
+
+def _detectar_genero_instancia(instancia: str) -> str:
+    """Returns 'femenino', 'masculino' or 'neutro' based on words in the instance name."""
+    palabras = instancia.lower().replace("-", " ").replace("_", " ").split()
+    for p in palabras:
+        if p in _NOMBRES_FEMENINOS:
+            return "femenino"
+        if p in _NOMBRES_MASCULINOS:
+            return "masculino"
+    return "neutro"
+
+
 def _construir_system_prompt(
     contexto_productos: str,
     ejemplos_entrenamiento: str,
     instrucciones_analisis: str,
     temas_repetidos: list[str],
     bot_nombre: str = "",
+    contact_name: str = "",
+    es_primer_mensaje: bool = False,
+    productos_detectados: list[str] | None = None,
+    genero_bot: str = "neutro",
 ) -> str:
     hora       = _saludo_hora()
-    nombre_bot = bot_nombre or BOT_NOMBRE or "Asesora"
+    nombre_bot = bot_nombre or "Asesora"
+    productos_detectados = productos_detectados or []
+
+    # Título según género
+    if genero_bot == "femenino":
+        titulo = "asesora"
+    elif genero_bot == "masculino":
+        titulo = "asesor"
+    else:
+        titulo = "asesor/a"
 
     # NOTE: user input is NEVER included here — it goes as role:user in the messages array.
     partes: list[str] = [
-        f"""Eres {nombre_bot}, asesora de bienestar y productos 4Life. Eres cálida, profesional y empática.
+        f"""Eres {nombre_bot}, {titulo} de bienestar y productos 4Life. Eres cálid{'a' if genero_bot == 'femenino' else 'o' if genero_bot == 'masculino' else 'o/a'}, profesional y empátic{'a' if genero_bot == 'femenino' else 'o' if genero_bot == 'masculino' else 'o/a'}.
 Tu misión es brindar información sobre los productos y ofertas exclusivas de 4Life.
 
 FORMA DE CONVERSAR:
 • Adáptate al contexto: no sigas pasos fijos ni guiones, responde lo que realmente se pregunta.
-• Sé concisa y natural: no abrumes con información que no fue pedida.
+• Sé concis{'a' if genero_bot == 'femenino' else 'o'} y natural: no abrumes con información que no fue pedida.
 • No repitas el mismo saludo ni la misma presentación en cada mensaje.
-• Si el cliente no ha dado su nombre, puedes pedirlo cuando sea natural hacerlo.
 • Nunca inventes precios, beneficios o propiedades que no estén en el catálogo.
 • Si no tienes información sobre algo, dilo honestamente en lugar de inventar.
-• Hora actual: {hora}."""
+• Hora actual en México: {hora}."""
     ]
+
+    # ── Instrucciones para PRIMER MENSAJE ────────────────────────────────────
+    if es_primer_mensaje:
+        saludo_instruc = [
+            f"PRIMER MENSAJE — Es el primer contacto con este cliente.",
+            f"• Salúdalo con '{hora}' de forma natural al inicio de tu respuesta.",
+            f"• Preséntate: 'Soy {nombre_bot}, asesora 4Life'.",
+        ]
+        if not contact_name:
+            saludo_instruc.append("• Pide su nombre de forma amigable.")
+        else:
+            saludo_instruc.append(f"• El cliente se llama {contact_name}, úsalo para personalizar.")
+        if productos_detectados:
+            nombres_str = ", ".join(productos_detectados)
+            saludo_instruc.append(
+                f"• El cliente preguntó por: {nombres_str}. Menciónalo en tu saludo y proporciona información del catálogo sobre ese producto."
+            )
+        partes.append("\n".join(saludo_instruc))
+
+    # ── Contexto de producto detectado (cualquier mensaje) ───────────────────
+    if productos_detectados:
+        bloque_prod = _formatear_productos_detectados(productos_detectados)
+        partes.append(bloque_prod)
 
     if instrucciones_analisis:
         partes.append(instrucciones_analisis)
@@ -484,6 +587,8 @@ async def generar_respuesta(
     telefono: str,
     instancia: str,
     contact_name: str = "",
+    productos_detectados: list[str] | None = None,
+    es_primer_mensaje: bool = False,
 ) -> str:
     """
     Generates a natural, adaptive response using GPT-4o-mini.
@@ -505,14 +610,18 @@ async def generar_respuesta(
 
     temas_repetidos = _detectar_temas_repetidos(historial_crm)
 
-    # Derive bot name: env var takes priority, else use formatted instancia name
-    bot_nombre = BOT_NOMBRE or _nombre_desde_instancia(instancia)
+    # Instance name takes priority so the bot presents with its WhatsApp line name
+    bot_nombre = _nombre_desde_instancia(instancia) or BOT_NOMBRE or "Asesora"
+    genero_bot = _detectar_genero_instancia(instancia)
 
+    prods = productos_detectados or []
     print(
-        f"[Responder] {telefono}  bot={bot_nombre}  "
+        f"[Responder] {telefono}  bot={bot_nombre}({genero_bot})  "
         f"productos={'sí' if contexto_productos else 'no'}  "
         f"ejemplos={'sí' if ejemplos else 'no'}  "
         f"análisis={'sí' if instrucciones else 'no'}  "
+        f"primer_msg={es_primer_mensaje}  "
+        f"prods_detectados={prods or 'ninguno'}  "
         f"temas_repetidos={temas_repetidos or 'ninguno'}",
         flush=True,
     )
@@ -523,6 +632,10 @@ async def generar_respuesta(
         instrucciones_analisis=instrucciones,
         temas_repetidos=temas_repetidos,
         bot_nombre=bot_nombre,
+        contact_name=contact_name,
+        es_primer_mensaje=es_primer_mensaje,
+        productos_detectados=prods,
+        genero_bot=genero_bot,
     )
 
     # Build messages: history + current user message

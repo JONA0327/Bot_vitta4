@@ -331,29 +331,31 @@ async def transcribir_audio(url_audio: str) -> str | None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _IMAGEN_SYSTEM = """\
-Eres un analizador de imágenes para un chatbot de ventas de 4Life.
+Eres un analizador de imágenes experto para un chatbot de ventas de 4Life.
 4Life vende suplementos nutricionales: Transfer Factor, RioVida, vitaminas, productos de bienestar y salud.
 
-TAREAS:
-1. Detectar si la imagen contiene productos de la empresa 4Life (empaques, etiquetas, logos de la marca, suplementos)
-2. Detectar si la imagen tiene contenido inapropiado (sexual, violento, ofensivo, groserías)
+TU PROCESO (sígelo en orden):
+1. DESCRIBE con detalle lo que ves: formas, colores, texto visible, logos, empaques, etiquetas.
+2. VERIFICA por descarte: si el empaque tiene color/forma/texto que NO coincide con lo mencionado en el caption, reporta lo que REALMENTE ves, no lo que el usuario dice.
+3. IDENTIFICA productos 4Life leyendo el texto de las etiquetas. Si el texto no es legible, usa forma y color para inferir pero marca confianza baja.
+4. CRUZA con el caption: si el usuario escribe un nombre (ej. 'Energy'), compara si la imagen muestra ese producto. Indica si coincide o no.
 
 REGLAS:
-- Solo reporta productos que puedas LEER o IDENTIFICAR VISUALMENTE en la imagen (etiquetas, cajas, texto)
-- No inferras productos que no estén claramente visibles
-- Si hay logo o banner de 4Life, reporta la línea aunque no se lean productos individuales
-
-DISTINCIÓN LÍNEA vs PRODUCTO:
-- LÍNEA/GAMA: nombre de categoría (ej: "4Life Digestive", "Transfer Factor" genérico) → va en nombre_linea
-- PRODUCTO INDIVIDUAL: nombre propio en etiqueta (ej: "RioVida", "Transfer Factor Plus") → va en productos_detectados
+- Solo confirma productos que puedas VER en la imagen (texto legible o características visuales claras).
+- Si la imagen es un thumbnail pequeño y no se lee bien, di explícitamente que la resolución es baja y da tu mejor inferencia.
+- No confirmes un producto solo porque el usuario lo mencionó en el caption; verifica visualmente.
+- Si hay múltiples productos visibles, lista todos.
+- LÍNEA/GAMA (ej: "Transfer Factor" genérico) → nombre_linea. PRODUCTO INDIVIDUAL (ej: "RioVida Tri-Factor") → productos_detectados.
 
 Responde ÚNICAMENTE con este JSON (sin texto adicional):
 {
   "tiene_productos_4life": true | false,
   "es_inapropiado": true | false,
-  "productos_detectados": ["nombre producto 1", "nombre producto 2"],
+  "productos_detectados": ["nombre exacto leído en etiqueta"],
   "nombre_linea": "nombre de la línea o null",
-  "descripcion": "descripción detallada de lo que se ve en la imagen",
+  "caption_coincide": true | false | null,
+  "confianza_visual": "alta" | "media" | "baja",
+  "descripcion": "descripción detallada: qué se ve, qué texto se lee, si coincide con el caption",
   "clasificacion": "producto_4life" | "negocio_4life" | "otro_contenido" | "inapropiado"
 }"""
 
@@ -402,11 +404,12 @@ async def analizar_imagen(
     print(f"[Filtro·imagen] ✅ imagen lista ({len(data_uri)//1024} KB) — analizando con GPT-4o…", flush=True)
 
     user_content: list = [
-        {"type": "image_url", "image_url": {"url": data_uri, "detail": "low"}},
+        # high detail para poder leer texto de etiquetas
+        {"type": "image_url", "image_url": {"url": data_uri, "detail": "high"}},
     ]
-    texto = "Analiza esta imagen."
+    texto = "Analiza esta imagen siguiendo tu proceso de verificación."
     if caption:
-        texto += f" El usuario escribió: {caption}"
+        texto += f" El usuario mencionó en su mensaje: '{caption}'. Verifica si la imagen realmente muestra eso."
     user_content.append({"type": "text", "text": texto})
 
     try:
@@ -440,13 +443,21 @@ async def analizar_imagen(
     print(f"[Filtro·imagen] ✅ GPT-4o respondió — raw={raw[:120]!r}", flush=True)
     data = _extraer_json(raw)
     if data:
+        confianza_visual = data.get("confianza_visual", "alta")
+        caption_coincide = data.get("caption_coincide")  # True/False/None
+        prods = data.get("productos_detectados") or []
+        # Si la confianza es baja Y el caption no coincide → no inventar productos
+        if confianza_visual == "baja" and caption_coincide is False:
+            prods = []
         return {
             "tiene_productos_4life": bool(data.get("tiene_productos_4life", False)),
             "es_inapropiado":        bool(data.get("es_inapropiado", False)),
-            "productos_detectados":  data.get("productos_detectados") or [],
+            "productos_detectados":  prods,
             "nombre_linea":          data.get("nombre_linea") or None,
             "descripcion":           data.get("descripcion", "Sin descripción"),
             "clasificacion":         data.get("clasificacion", "otro_contenido"),
+            "confianza_visual":      confianza_visual,
+            "caption_coincide":      caption_coincide,
         }
 
     return {**_default_err, "descripcion": f"Respuesta AI no parseable: {raw[:150]}"}

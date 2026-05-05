@@ -315,6 +315,7 @@ async def _procesar_mensaje(datos: dict) -> None:
 
     # 2. Get conversation history
     historial = await obtener_historial(telefono, limit=15)
+    es_primer_mensaje = len(historial) == 0
     print(
         f"[Historial] {telefono} → {len(historial)} turno(s) en CRM",
         flush=True,
@@ -343,6 +344,7 @@ async def _procesar_mensaje(datos: dict) -> None:
         return
 
     # 4. Generate adaptive response
+    productos_detectados = filtro.get("productos_detectados") or []
     print(f"[GPT] {telefono} generando respuesta…", flush=True)
     respuesta = await _responder_module.generar_respuesta(
         mensaje=mensaje_efectivo,
@@ -350,6 +352,8 @@ async def _procesar_mensaje(datos: dict) -> None:
         telefono=telefono,
         instancia=instancia,
         contact_name=contact_name,
+        productos_detectados=productos_detectados,
+        es_primer_mensaje=es_primer_mensaje,
     )
 
     if not respuesta:
