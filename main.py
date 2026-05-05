@@ -307,13 +307,23 @@ async def _procesar_mensaje(datos: dict) -> None:
     )
 
     # 3. Resolve effective message text
-    # For audio: use Whisper transcript; for image: use caption or original message
-    mensaje_efectivo = (
-        filtro.get("transcripcion")       # audio transcript
-        or caption                        # image caption
-        or mensaje
-        or ""
-    ).strip()
+    # For audio: use Whisper transcript
+    # For image: use AI description (includes what was seen) + caption if provided
+    # For text: original message
+    tipo_detectado = filtro.get("tipo_detectado", "texto")
+    if tipo_detectado == "imagen":
+        descripcion_imagen = filtro.get("descripcion", "").strip()
+        texto_imagen = descripcion_imagen
+        if caption:
+            texto_imagen = f"{caption}\n[Imagen: {descripcion_imagen}]" if descripcion_imagen else caption
+        mensaje_efectivo = texto_imagen or mensaje or ""
+    else:
+        mensaje_efectivo = (
+            filtro.get("transcripcion")       # audio transcript
+            or caption
+            or mensaje
+            or ""
+        ).strip()
 
     if not mensaje_efectivo:
         return

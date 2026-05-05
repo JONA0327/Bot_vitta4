@@ -297,7 +297,10 @@ async def analizar_imagen(url_imagen: str, caption: str = "") -> dict:
     # Descargar imagen — si falla no intentamos la URL cruda (WhatsApp requiere auth)
     data_uri = await _descargar_imagen_base64(url_imagen)
     if not data_uri:
+        print(f"[Filtro·imagen] ❌ no se pudo descargar la imagen — url={url_imagen[:80]!r}", flush=True)
         return {**_default_err, "descripcion": "No se pudo descargar la imagen — ignorada"}
+
+    print(f"[Filtro·imagen] ✅ imagen descargada ({len(data_uri)} chars) — analizando con GPT-4o…", flush=True)
 
     user_content: list = [
         {"type": "image_url", "image_url": {"url": data_uri, "detail": "low"}},
@@ -328,8 +331,10 @@ async def analizar_imagen(url_imagen: str, caption: str = "") -> dict:
             resp.raise_for_status()
             raw = resp.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
+        print(f"[Filtro·imagen] ❌ error GPT-4o: {e}", flush=True)
         return {**_default_err, "descripcion": f"Error analizando imagen: {e}"}
 
+    print(f"[Filtro·imagen] ✅ GPT-4o respondió — raw={raw[:120]!r}", flush=True)
     data = _extraer_json(raw)
     if data:
         return {
@@ -515,6 +520,7 @@ async def clasificar_mensaje(
     # ── IMAGEN ────────────────────────────────────────────────────────────────
     if es_imagen:
         url_img  = url_media or thumbnail_url or ""
+        print(f"[Filtro] 🖼  analizando imagen — url={'data:...' if url_img.startswith('data:') else url_img[:80]!r}", flush=True)
         resultado = await analizar_imagen(url_img, caption=caption or mensaje)
 
         if resultado["es_inapropiado"]:
@@ -524,9 +530,13 @@ async def clasificar_mensaje(
         else:
             clasificacion_final = "irrelevante"
 
+        print(
+            f"[Filtro] 🖼  resultado imagen — clasif={clasificacion_final}  "
+            f"tiene_4life={resultado['tiene_productos_4life']}  "
+            f"desc='{resultado['descripcion'][:80]}'",
+            flush=True,
+        )
         return {
-            "clasificacion":        clasificacion_final,
-            "tipo_detectado":       "imagen",
             "descripcion":          resultado["descripcion"],
             "productos_detectados": resultado.get("productos_detectados", []),
             "nombre_linea":         resultado.get("nombre_linea"),
