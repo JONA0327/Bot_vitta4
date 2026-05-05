@@ -405,4 +405,4 @@ async def recibir_mensaje(payload: MensajePayload, request: Request) -> dict:
         }
 
     _pending_tasks[clave] = asyncio.create_task(_procesar_con_delay(clave))
-    return {"ok": True, "queued": clave}
+    return {"ok": True, "queued": clave, "debounced": True}
