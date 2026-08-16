@@ -139,3 +139,7 @@ async def procesar_mensaje(payload: dict, prompts: PromptSet) -> None:
 
     if not resultado.get("success"):
         logger.error("bot-send falló para tel=%s: %s", telefono, resultado)
+    elif resultado.get("enviado") is False:
+        # El CRM registró la respuesta pero NO la envió por WhatsApp — el bot
+        # está apagado globalmente o esa instancia está pausada desde el panel.
+        logger.info("bot-send registrado sin enviar (bot apagado/instancia pausada) tel=%s", telefono)
