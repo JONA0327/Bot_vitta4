@@ -1,8 +1,8 @@
 # vitta4_Bot_3.0
 
 Bot de WhatsApp en Python que usa el CRM (`CRM_AUTOMATIZADOR`) como backend:
-lee los prompts `.vit` exportados desde Configuración → Prompt, resuelve los
-catálogos en vivo, genera la respuesta con el proveedor de IA que elijas, y
+pide los prompts `.vit` directo al CRM por API (Configuración → Prompt), resuelve
+los catálogos en vivo, genera la respuesta con el proveedor de IA que elijas, y
 respeta los comandos de control (`{PAUSAR}`/`{BLOQUEADO}`/`{BANEADO}`/`{CONTINUAR}`)
 y de IA (`{ANALIZAR_IMAGEN}`/`{TRANSCRIBIR_AUDIO}`).
 
@@ -18,7 +18,7 @@ WhatsApp → Evolution API → CRM (/webhook/whatsapp/{instancia})
                                                               │  1. Prompt de Filtros → ¿bloquear/pausar?
                                                               │     └─ sí → POST /blocked_numbers al CRM, fin
                                                               │  2. GET /memoria (historial real, anti-ciclo)
-                                                              │  3. Prompt de reglas + catálogos → IA
+                                                              │  3. GET /prompt/reglas (cacheado) + catálogos → IA
                                                               │  4. POST /bot-send al CRM
                                                               ▼
                                               CRM parsea {TAG}, aplica estado,
@@ -48,13 +48,22 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 | `CRM_TENANT_SLUG` | Slug de tu negocio en el CRM |
 | `CRM_API_TOKEN` | Configuración → Entorno → API Token general |
 | `CRM_PROMPT_API_KEY` | Configuración → Prompt → API Key de consulta |
+| `VIT_SOURCE` | `api` (recomendado, default) para pedir los prompts directo al CRM, o `file` para el modo viejo de disco |
 | `AI_PROVIDER` | `openai` \| `gemini` \| `deepseek` \| `claude` |
 | `OPENAI_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` | Solo llena la del proveedor que elegiste |
 
-Los prompts (`prompts/reglas.vit`, `prompts/filtros.vit`) ya traen una
-plantilla de ejemplo — reemplázalos por lo que exportes desde el CRM
-(Configuración → Prompt → Exportar .vit). Con `VIT_RELOAD_ON_CHANGE=true`
-(default) no hace falta reiniciar el bot al reemplazar los archivos.
+### Cómo llega el prompt al bot
+
+Con `VIT_SOURCE=api` (default) el bot ya no necesita nada en disco: al
+arrancar, y luego cada `VIT_CACHE_SECONDS` (default 60s), pide
+`GET /prompt/reglas` y `GET /prompt/filtros` al CRM con `CRM_PROMPT_API_KEY`.
+Cualquier cambio que guardes en Configuración → Prompt del panel se refleja
+solo, sin tocar el servidor del bot ni reiniciarlo.
+
+Si prefieres el flujo manual, pon `VIT_SOURCE=file` — entonces el bot lee
+`prompts/reglas.vit` y `prompts/filtros.vit` de disco (los que exportas desde
+Configuración → Prompt → Exportar .vit). Con `VIT_RELOAD_ON_CHANGE=true`
+(default) no hace falta reiniciar el bot al reemplazar esos archivos.
 
 ## Anti-ciclo
 

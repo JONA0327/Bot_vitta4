@@ -34,6 +34,8 @@ prompts = PromptSet(
     reglas_path=settings.vit_reglas_path,
     filtros_path=settings.vit_filtros_path,
     reload_on_change=settings.vit_reload_on_change,
+    source=settings.vit_source,
+    cache_seconds=settings.vit_cache_seconds,
 )
 
 
@@ -47,10 +49,14 @@ async def startup() -> None:
     else:
         logger.info("Configuración OK — proveedor de IA: %s (filtro: %s)", settings.ai_provider, settings.effective_filter_provider)
 
-    if not prompts.reglas().strip():
-        logger.warning("El Prompt de reglas (%s) está vacío o no existe.", settings.vit_reglas_path)
-    if not prompts.filtros().strip():
-        logger.info("El Prompt de filtros (%s) está vacío — el bot no clasificará mensajes.", settings.vit_filtros_path)
+    logger.info("Fuente de los prompts (.vit): %s", settings.vit_source)
+
+    if not (await prompts.reglas()).strip():
+        origen = settings.vit_reglas_path if settings.vit_source == "file" else "GET /prompt/reglas"
+        logger.warning("El Prompt de reglas (%s) está vacío o no existe.", origen)
+    if not (await prompts.filtros()).strip():
+        origen = settings.vit_filtros_path if settings.vit_source == "file" else "GET /prompt/filtros"
+        logger.info("El Prompt de filtros (%s) está vacío — el bot no clasificará mensajes.", origen)
 
 
 @app.get("/health")

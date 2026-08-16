@@ -15,8 +15,12 @@ class CrmClient:
     """
     Dos credenciales distintas, a propósito:
       - api_token         → bot-send, entrenamiento (endpoints "de acción")
-      - prompt_api_key     → memoria, prompt/modulos, prompt/catalogo (solo lectura,
-                              acceso acotado, para que una fuga no exponga todo)
+      - prompt_api_key     → memoria, modulos, catálogos, prompt/reglas, prompt/filtros
+                              (solo lectura, acceso acotado, para que una fuga no exponga todo)
+
+    Nota: /modulos y /{modulo} son la MISMA API que usa el resto del CRM (ya no hay
+    endpoints "/prompt/modulos" ni "/prompt/catalogo/{modulo}" separados) — solo que
+    en lectura aceptan también la prompt_api_key. Ver CatalogApiController en el CRM.
     """
 
     def __init__(self) -> None:
@@ -30,6 +34,16 @@ class CrmClient:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.get(url, headers=self._headers(api_key), params=params or {})
         return self._parsear(resp)
+
+    async def _get_text(self, path: str, api_key: str) -> str:
+        """Para endpoints que devuelven texto plano (los .vit de /prompt/*)."""
+        url = settings.crm_url(path)
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(url, headers=self._headers(api_key))
+        if not resp.is_success:
+            logger.warning("CRM %s → HTTP %s: %s", resp.request.url, resp.status_code, resp.text[:200])
+            return ""
+        return resp.text
 
     async def _post(self, path: str, api_key: str, body: dict) -> dict[str, Any]:
         url = settings.crm_url(path)
@@ -56,17 +70,27 @@ class CrmClient:
         return data.get("mensajes", []) if data.get("success") else []
 
     # ── Catálogos (para resolver tags [CATALOGO_x.campo]) ──────────────────
+    # GET /modulos y GET /{modulo} — misma API que el resto del CRM, en modo
+    # lectura acepta la prompt_api_key (ver nota de la clase).
 
     async def prompt_modulos(self) -> list[dict]:
-        data = await self._get("prompt/modulos", settings.crm_prompt_api_key)
+        data = await self._get("modulos", settings.crm_prompt_api_key)
         return data.get("data", []) if data.get("success") else []
 
     async def prompt_catalogo(self, modulo_slug: str, search: Optional[str] = None, per_page: int = 50) -> list[dict]:
         params: dict[str, Any] = {"per_page": per_page}
         if search:
             params["search"] = search
-        data = await self._get(f"prompt/catalogo/{modulo_slug}", settings.crm_prompt_api_key, params)
+        data = await self._get(modulo_slug, settings.crm_prompt_api_key, params)
         return data.get("data", []) if data.get("success") else []
+
+    # ── Prompts .vit — el bot los pide directo, sin descargar/subir a mano ──
+
+    async def prompt_reglas(self) -> str:
+        return await self._get_text("prompt/reglas", settings.crm_prompt_api_key)
+
+    async def prompt_filtros(self) -> str:
+        return await self._get_text("prompt/filtros", settings.crm_prompt_api_key)
 
     # ── Envío de la respuesta + comandos de control/IA ─────────────────────
 

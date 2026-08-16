@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from typing import Optional
 
 from .crm_client import crm
@@ -21,8 +22,32 @@ logger = logging.getLogger("vitta4.vit_loader")
 
 _TAG_RE = re.compile(r"\[CATALOGO_([A-Z0-9_]+)(?:\.[a-zA-Z0-9_]+)?\]")
 
-# Cache en memoria: {ruta: (mtime, contenido)}
+# Cache de archivos locales: {ruta: (mtime, contenido)}
 _cache: dict[str, tuple[float, str]] = {}
+
+# Cache de prompts pedidos por API: {tipo: (fetched_at_monotonic, contenido)}
+_cache_api: dict[str, tuple[float, str]] = {}
+
+
+async def _cargar_vit_api(tipo: str, ttl_seconds: int) -> str:
+    """Pide el .vit directo al CRM (GET /prompt/reglas o /prompt/filtros).
+
+    Cachea en memoria por `ttl_seconds` para no pegarle al CRM en cada
+    mensaje — con ttl_seconds=0 lo pide siempre (útil mientras ajustas el
+    prompt en el panel y quieres verlo reflejado al instante).
+    """
+    cached = _cache_api.get(tipo)
+    if cached and ttl_seconds > 0 and (time.monotonic() - cached[0]) < ttl_seconds:
+        return cached[1]
+
+    try:
+        contenido = await (crm.prompt_reglas() if tipo == "reglas" else crm.prompt_filtros())
+    except Exception:
+        logger.exception("No se pudo obtener /prompt/%s del CRM", tipo)
+        return cached[1] if cached else ""
+
+    _cache_api[tipo] = (time.monotonic(), contenido)
+    return contenido
 
 
 def cargar_vit(path: str, reload_on_change: bool = True) -> str:
@@ -64,7 +89,7 @@ async def resolver_catalogos(texto: str, max_registros_por_modulo: int = 60) -> 
     try:
         modulos = await crm.prompt_modulos()
     except Exception:
-        logger.exception("No se pudo obtener /prompt/modulos — se responde sin datos de catálogo")
+        logger.exception("No se pudo obtener /modulos — se responde sin datos de catálogo")
         return texto
 
     tag_a_modulo = {m["tag"]: m for m in modulos if m.get("tag") in tags_modulo}
@@ -116,18 +141,38 @@ def _formatear_filas(filas: list[dict]) -> str:
 
 
 class PromptSet:
-    """Agrupa el prompt de reglas y el de filtros con recarga perezosa desde disco."""
+    """
+    Agrupa el prompt de reglas y el de filtros.
 
-    def __init__(self, reglas_path: str, filtros_path: str, reload_on_change: bool = True) -> None:
+    source="api"  → los pide directo al CRM (GET /prompt/reglas, /prompt/filtros),
+                    cacheados `cache_seconds` en memoria (recomendado).
+    source="file" → los lee de disco (`reglas_path` / `filtros_path`), recargando
+                    si cambia el mtime cuando `reload_on_change=True`.
+    """
+
+    def __init__(
+        self,
+        reglas_path: str,
+        filtros_path: str,
+        reload_on_change: bool = True,
+        source: str = "api",
+        cache_seconds: int = 60,
+    ) -> None:
         self.reglas_path = reglas_path
         self.filtros_path = filtros_path
         self.reload_on_change = reload_on_change
+        self.source = source
+        self.cache_seconds = cache_seconds
 
-    def reglas(self) -> str:
-        return cargar_vit(self.reglas_path, self.reload_on_change)
+    async def reglas(self) -> str:
+        if self.source == "file":
+            return cargar_vit(self.reglas_path, self.reload_on_change)
+        return await _cargar_vit_api("reglas", self.cache_seconds)
 
-    def filtros(self) -> str:
-        return cargar_vit(self.filtros_path, self.reload_on_change)
+    async def filtros(self) -> str:
+        if self.source == "file":
+            return cargar_vit(self.filtros_path, self.reload_on_change)
+        return await _cargar_vit_api("filtros", self.cache_seconds)
 
     async def reglas_resueltas(self) -> str:
-        return await resolver_catalogos(self.reglas())
+        return await resolver_catalogos(await self.reglas())

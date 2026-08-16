@@ -77,7 +77,7 @@ async def procesar_mensaje(payload: dict, prompts: PromptSet) -> None:
             telefono=telefono,
             remote_jid=remote_jid,
             instancia=instancia,
-            filtros_prompt=prompts.filtros(),
+            filtros_prompt=await prompts.filtros(),
         )
     except Exception:
         logger.exception("Error ejecutando el filtro — se continúa como mensaje normal")

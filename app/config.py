@@ -53,6 +53,12 @@ class Settings:
     bot_webhook_secret: str = field(default_factory=lambda: _env("BOT_WEBHOOK_SECRET"))
 
     # Prompts .vit
+    # "api"  (recomendado) → los pide directo al CRM (GET /prompt/reglas y
+    #         /prompt/filtros) con CRM_PROMPT_API_KEY, cacheados VIT_CACHE_SECONDS.
+    # "file" → los lee de disco (VIT_REGLAS_PATH / VIT_FILTROS_PATH), el flujo
+    #         viejo de exportar el .vit desde el panel y copiarlo a mano.
+    vit_source: str = field(default_factory=lambda: _env("VIT_SOURCE", "api").lower())
+    vit_cache_seconds: int = field(default_factory=lambda: _env_int("VIT_CACHE_SECONDS", 60))
     vit_reglas_path: str = field(default_factory=lambda: _env("VIT_REGLAS_PATH", "./prompts/reglas.vit"))
     vit_filtros_path: str = field(default_factory=lambda: _env("VIT_FILTROS_PATH", "./prompts/filtros.vit"))
     vit_reload_on_change: bool = field(default_factory=lambda: _env_bool("VIT_RELOAD_ON_CHANGE", True))
@@ -89,6 +95,8 @@ class Settings:
             problemas.append("CRM_API_TOKEN no está configurado (necesario para /bot-send).")
         if not self.crm_prompt_api_key:
             problemas.append("CRM_PROMPT_API_KEY no está configurado (necesario para /memoria y /prompt/*).")
+        if self.vit_source not in ("api", "file"):
+            problemas.append(f"VIT_SOURCE='{self.vit_source}' no es válido (usa api|file).")
         if self.ai_provider not in ("openai", "gemini", "deepseek", "claude"):
             problemas.append(f"AI_PROVIDER='{self.ai_provider}' no es válido (usa openai|gemini|deepseek|claude).")
         return problemas
