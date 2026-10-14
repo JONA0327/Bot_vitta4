@@ -16,6 +16,8 @@ import logging
 from . import filtro, responder
 from .config import settings
 from .crm_client import crm
+from .formato import extraer_medios, limpiar_formato
+from .medios_catalogo import medios_para
 from .vit_loader import PromptSet
 
 logger = logging.getLogger("vitta4.conversation")
@@ -84,7 +86,14 @@ async def procesar_mensaje(payload: dict, prompts: PromptSet) -> None:
         clasificacion = None
 
     if clasificacion:
-        logger.info("Filtro clasificó tel=%s como %s", telefono, clasificacion["tipo_bloqueo"])
+        logger.info("Filtro clasificó tel=%s como %s", telefono, clasificacion["control"])
+        if clasificacion["control"] in ("PAUSAR", "CONTINUAR"):
+            await crm.bot_send(
+                telefono=telefono, instancia=instancia, remote_jid=remote_jid,
+                respuesta="{%s} [[MOTIVO: %s]]" % (clasificacion["control"], clasificacion["motivo"].replace("]]", "]")),
+                user_message=mensaje, contact_name=contact_name,
+            )
+            return
         await crm.blocked_numbers(
             numero_baneado=clasificacion["numero_baneado"],
             numero_remote=clasificacion["numero_remote"],
@@ -109,8 +118,14 @@ async def procesar_mensaje(payload: dict, prompts: PromptSet) -> None:
 
     # 3) Generar respuesta con el Prompt de reglas (catálogos resueltos).
     respuesta = await responder.generar(mensaje, historial, prompts)
+    medios: list[dict] = []
+    if respuesta:
+        respuesta, medios = extraer_medios(respuesta)
+        respuesta = limpiar_formato(respuesta)
+        if not medios:
+            medios = await medios_para(telefono, respuesta)
 
-    if not respuesta:
+    if not respuesta and not medios:
         logger.error("La IA no devolvió respuesta para tel=%s — se registra sin enviar texto", telefono)
         await crm.bot_send(telefono=telefono, instancia=instancia, remote_jid=remote_jid, respuesta="", user_message=mensaje, contact_name=contact_name, solo_registrar=True, status="bot_sin_respuesta")
         return
@@ -121,10 +136,8 @@ async def procesar_mensaje(payload: dict, prompts: PromptSet) -> None:
     anteriores = _ultimas_respuestas_bot(filas, settings.max_respuestas_repetidas)
     if _bot_en_bucle(respuesta, anteriores, settings.max_respuestas_repetidas):
         logger.warning("Bucle detectado para tel=%s — pausando y escalando a humano", telefono)
-        respuesta = (
-            "Voy a pedirle a un miembro de nuestro equipo que te ayude con esto directamente. "
-            "En un momento te contactan. {PAUSAR}"
-        )
+        respuesta = "Con gusto, enseguida le doy seguimiento a su consulta. {PAUSAR}"
+        medios = []
 
     # 5) Enviar — el CRM parsea los comandos {TAG}, los quita del texto visible,
     #    aplica el estado, y entrega el mensaje limpio por WhatsApp.
@@ -135,6 +148,7 @@ async def procesar_mensaje(payload: dict, prompts: PromptSet) -> None:
         respuesta=respuesta,
         user_message=mensaje,
         contact_name=contact_name,
+        medios=medios,
     )
 
     if not resultado.get("success"):

@@ -15,13 +15,13 @@ from .config import settings
 
 logger = logging.getLogger("vitta4.filtro")
 
-_TIPOS_VALIDOS = {"inapropiado", "prompt_injection", "irrelevante"}
+# El CRM (POST /blocked_numbers) solo acepta estos tipos de bloqueo.
+_TIPOS_BLOQUEO = {"inapropiado", "prompt_injection"}
 
 _INSTRUCCION_FORMATO = (
     "\n\n---\n"
-    "Responde ÚNICAMENTE con la palabra NORMAL si el mensaje no requiere ninguna acción, "
-    "o con un JSON (sin texto alrededor, sin markdown) con este formato exacto si sí la requiere:\n"
-    '{ "tipo_bloqueo": "inapropiado" | "prompt_injection" | "irrelevante", "Motivo_Bloqueo": "..." }'
+    "Responde ÚNICAMENTE con el JSON del FORMATO DE SALIDA de este prompt (sin texto alrededor, "
+    "sin markdown). Si el mensaje debe continuar normal, responde solo con la palabra PASAR."
 )
 
 
@@ -71,7 +71,7 @@ async def clasificar_mensaje(
         return None
 
     limpio = texto.strip()
-    if limpio.upper().startswith("NORMAL"):
+    if limpio.upper().startswith(("NORMAL", "PASAR")):
         return None
 
     data = _extraer_json(limpio)
@@ -79,17 +79,28 @@ async def clasificar_mensaje(
         logger.warning("Respuesta del filtro no es JSON reconocible, se ignora: %s", limpio[:200])
         return None
 
-    tipo_bloqueo = str(data.get("tipo_bloqueo", "")).strip().lower()
-    if tipo_bloqueo not in _TIPOS_VALIDOS:
-        logger.warning("tipo_bloqueo '%s' no reconocido, se ignora la clasificación", tipo_bloqueo)
+    if str(data.get("status", "")).upper() == "PASAR":
         return None
 
-    return {
+    base = {
         "numero_baneado": str(data.get("Numero_Baneado") or telefono),
         "numero_remote": str(data.get("Numero_Remote") or remote_jid or telefono),
-        "tipo_bloqueo": tipo_bloqueo,
-        "motivo": str(data.get("Motivo_Bloqueo") or "Clasificado por el filtro"),
+        "motivo": str(data.get("Motivo_Bloqueo") or data.get("Motivo") or "Clasificado por el filtro"),
         "instancia": str(data.get("instancia") or instancia),
         "mensaje": mensaje,
         "etiqueta": data.get("etiqueta"),
     }
+    control = str(data.get("control", "")).strip("{} ").upper()
+    tipo = str(data.get("tipo_bloqueo", "")).strip().lower()
+
+    # PAUSAR/CONTINUAR no son bloqueos: van por bot-send como comando {TAG}
+    # (queda en "Pausadas", no en "Irrelevantes"). "irrelevante" legacy = pausar.
+    if control in ("PAUSAR", "CONTINUAR") or tipo == "irrelevante":
+        return {**base, "control": control or "PAUSAR"}
+
+    if control in ("BANEADO", "BLOQUEADO") or tipo:
+        # solicitud_baja y similares se registran como "inapropiado" (único tipo que acepta el CRM)
+        return {**base, "control": "BLOQUEAR", "tipo_bloqueo": tipo if tipo in _TIPOS_BLOQUEO else "inapropiado"}
+
+    logger.warning("Clasificación del filtro no reconocida, se ignora: %s", limpio[:200])
+    return None
