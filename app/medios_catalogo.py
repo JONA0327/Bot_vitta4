@@ -14,7 +14,7 @@ from .crm_client import crm
 
 logger = logging.getLogger("vitta4.medios")
 
-MIN_DETALLE = 350  # caracteres: por debajo es una frase corta (etapa de indagar), no se mandan medios
+MIN_DETALLE = 200  # caracteres: por debajo es una frase muy corta (indagar/cortesía), no se mandan medios
 _TTL = 600
 _cache: dict = {"t": 0.0, "items": []}
 # ponytail: en memoria; se pierde al reiniciar el bot (reenviaría una vez). Persistir si molesta.
@@ -50,14 +50,19 @@ async def _productos() -> list[dict]:
 
 async def medios_para(telefono: str, texto: str) -> list[dict]:
     if len(texto) < MIN_DETALLE:
+        logger.info("Sin medios tel=%s: respuesta corta (%d < %d car.)", telefono, len(texto), MIN_DETALLE)
         return []
     try:
         p = _elegir(await _productos(), texto)
     except Exception:
         logger.exception("No se pudo consultar el catálogo para adjuntar medios")
         return []
+    if not p:
+        logger.info("Sin medios tel=%s: no hay exactamente un producto citado en la respuesta", telefono)
+        return []
     vistos = _enviados.setdefault(telefono, set())
-    if not p or p["id"] in vistos:
+    if p["id"] in vistos:
+        logger.info("Sin medios tel=%s: ya se enviaron los de %s", telefono, p["n"])
         return []
     vistos.add(p["id"])
     logger.info("Adjuntando medios del producto %s a tel=%s", p["n"], telefono)
