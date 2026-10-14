@@ -36,7 +36,7 @@ class ProviderKeys:
     deepseek_key: str = field(default_factory=lambda: _env("DEEPSEEK_API_KEY"))
     deepseek_model: str = field(default_factory=lambda: _env("DEEPSEEK_MODEL", "deepseek-chat"))
     claude_key: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY"))
-    claude_model: str = field(default_factory=lambda: _env("CLAUDE_MODEL", "claude-3-5-sonnet-20241022"))
+    claude_model: str = field(default_factory=lambda: _env("CLAUDE_MODEL", "claude-haiku-4-5-20251001"))
 
 
 @dataclass(frozen=True)
@@ -62,6 +62,10 @@ class Settings:
     vit_reglas_path: str = field(default_factory=lambda: _env("VIT_REGLAS_PATH", "./prompts/reglas.vit"))
     vit_filtros_path: str = field(default_factory=lambda: _env("VIT_FILTROS_PATH", "./prompts/filtros.vit"))
     vit_reload_on_change: bool = field(default_factory=lambda: _env_bool("VIT_RELOAD_ON_CHANGE", True))
+
+    # Ráfagas de mensajes: margen (segundos) desde el primer mensaje de una
+    # racha para encolar los siguientes y responderlos juntos en uno solo.
+    debounce_seconds: int = field(default_factory=lambda: _env_int("DEBOUNCE_SECONDS", 40))
 
     # Proveedor de IA
     ai_provider: str = field(default_factory=lambda: _env("AI_PROVIDER", "openai").lower())
