@@ -129,15 +129,19 @@ async def _claude(system_prompt: str, historial: list[dict], mensaje_usuario: st
                 "model": p.claude_model,
                 "system": system_prompt,
                 "messages": messages,
-                "max_tokens": 1024,
+                "max_tokens": 4096,  # margen: los modelos con razonamiento gastan parte en pensar
             },
         )
     if not resp.is_success:
         logger.warning("HTTP %s de Claude: %s", resp.status_code, resp.text[:300])
         return None
     data = resp.json()
+    # Los modelos nuevos pueden devolver un bloque "thinking" antes del texto: se juntan solo los bloques de texto.
     try:
-        return data["content"][0]["text"]
-    except (KeyError, IndexError, TypeError):
+        texto = "".join(b.get("text", "") for b in data["content"] if b.get("type") == "text").strip()
+    except (KeyError, TypeError, AttributeError):
+        texto = ""
+    if not texto:
         logger.warning("Respuesta de Claude sin texto: %s", data)
         return None
+    return texto
