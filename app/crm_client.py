@@ -77,6 +77,14 @@ class CrmClient:
         data = await self._get("modulos", settings.crm_prompt_api_key)
         return data.get("data", []) if data.get("success") else []
 
+    async def archivos_relevantes(self, consulta: str, modulo: Optional[str] = None, max_chars: int = 6000) -> list[dict]:
+        """Fragmentos de los archivos subidos a los módulos (OCR→Markdown) que responden a `consulta`."""
+        params: dict[str, Any] = {"q": consulta, "max_chars": max_chars}
+        if modulo:
+            params["modulo"] = modulo
+        data = await self._get("archivos", settings.crm_prompt_api_key, params)
+        return data.get("data", []) if data.get("success") else []
+
     async def prompt_catalogo(self, modulo_slug: str, search: Optional[str] = None, per_page: int = 50) -> list[dict]:
         params: dict[str, Any] = {"per_page": per_page}
         if search:

@@ -26,5 +26,16 @@ assert mc._elegir(prods, largo + " También el TF Max.") is None  # dos producto
 mc._cache.update(t=1e18, items=prods)  # catálogo falso en caché
 assert asyncio.run(mc.medios_para("521", largo)) == [{"tipo": "imagen", "url": "catalog/a.jpg"}, {"tipo": "video", "url": "catalog/a.mp4"}]
 assert asyncio.run(mc.medios_para("521", largo)) == []          # no se repite al mismo contacto
-assert asyncio.run(mc.medios_para("999", "El Avanzado es bueno")) == []  # mensaje corto: sin medios
+assert asyncio.run(mc.medios_para("999", "El Avanzado es bueno")) == []  # mensaje muy corto: sin medios
+medio = ("El 4Life Avanzado apoya sus defensas con proteínas de calostro y yema de huevo, como complemento diario "
+         "de su alimentación. Son suplementos alimenticios, no medicamentos, y cada persona responde distinto. "
+         "¿Quiere saber más o el costo?")
+assert 200 <= len(medio) < 350 and asyncio.run(mc.medios_para("888", medio)) != []  # respuesta mediana: ahora sí lleva medios
 print("ok medios")
+
+# --- documentos de referencia ---
+from app import documentos
+assert documentos.construir_bloque([]) == ""
+b = documentos.construir_bloque([{"modulo": "Productos", "archivo": "catalogo.pdf", "fragmento": "4Life Avanzado: 90 cápsulas."}])
+assert "DOCUMENTOS DE REFERENCIA" in b and "Productos — catalogo.pdf" in b and "90 cápsulas" in b
+print("ok documentos")

@@ -16,10 +16,10 @@ _PROMPT_VACIO_FALLBACK = (
 )
 
 
-async def generar(mensaje: str, historial: list[dict], prompts: PromptSet) -> Optional[str]:
+async def generar(mensaje: str, historial: list[dict], prompts: PromptSet, contexto_extra: str = "") -> Optional[str]:
     system_prompt = await prompts.reglas_resueltas()
     if not system_prompt.strip():
         logger.warning("Prompt de reglas vacío — usando fallback genérico")
         system_prompt = _PROMPT_VACIO_FALLBACK
 
-    return await generar_respuesta(settings.ai_provider, system_prompt, historial, mensaje)
+    return await generar_respuesta(settings.ai_provider, system_prompt + contexto_extra, historial, mensaje)

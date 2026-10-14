@@ -13,7 +13,7 @@ from __future__ import annotations
 import difflib
 import logging
 
-from . import filtro, responder
+from . import documentos, filtro, responder
 from .config import settings
 from .crm_client import crm
 from .formato import extraer_medios, limpiar_formato
@@ -117,7 +117,8 @@ async def procesar_mensaje(payload: dict, prompts: PromptSet) -> None:
     historial = _historial_para_ia(filas)
 
     # 3) Generar respuesta con el Prompt de reglas (catálogos resueltos).
-    respuesta = await responder.generar(mensaje, historial, prompts)
+    contexto_docs = await documentos.contexto(mensaje, historial)
+    respuesta = await responder.generar(mensaje, historial, prompts, contexto_docs)
     medios: list[dict] = []
     if respuesta:
         respuesta, medios = extraer_medios(respuesta)
